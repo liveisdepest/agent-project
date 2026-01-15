@@ -1,15 +1,12 @@
 [project]
 name = "irrigation"
 version = "0.1.0"
-description = "智能灌溉管理服务"
+description = "MCP Irrigation Server with ESP8266 integration"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "mcp>=1.6.0",
-    "httpx>=0.24.0",
-    "fastmcp>=0.1.0",
+    "mcp>=0.1.0",
+    "fastapi>=0.100.0",
+    "uvicorn>=0.20.0",
+    "pydantic>=2.0.0"
 ]
-
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"

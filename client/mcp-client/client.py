@@ -191,7 +191,13 @@ class MCPClient:
         if not self.conversation_history:
             self.conversation_history.append({
                 "role": "system", 
-                "content": "你是一个有用的助手。你可以使用提供的工具来回答用户的问题。如果需要使用工具，请生成标准的工具调用，而不是直接输出 JSON 文本。如果你的回复看起来像是一个 JSON 对象且包含 'name' 和 'arguments' 字段，请务必将其作为工具调用发送。"
+                "content": """你是一个有用的助手。你可以使用提供的工具来回答用户的问题。
+                
+                重要规则：
+                1. 如果需要使用工具，请生成标准的工具调用，而不是直接输出 JSON 文本。
+                2. 如果你的回复看起来像是一个 JSON 对象且包含 'name' 和 'arguments' 字段，请务必将其作为工具调用发送。
+                3. 当用户要求你判断是否需要浇水时，如果条件满足（例如土壤湿度低），你必须**直接调用 control_pump 工具**来执行浇水操作，而不仅仅是给出建议。
+                4. 不要只说“建议浇水”，要直接行动。"""
             })
 
         # 将用户的新查询添加到历史记录
@@ -257,32 +263,99 @@ class MCPClient:
                                 tool_calls.append(tc)
 
             # 检查是否返回了纯 JSON 文本作为工具调用（Ollama 常见问题）
-            if not has_tool_calls and json_buffer.strip().startswith("{") and "arguments" in json_buffer:
-                try:
-                    import uuid
-                    # 尝试解析 JSON
-                    potential_tool = json.loads(json_buffer.strip())
-                    if "name" in potential_tool and "arguments" in potential_tool:
-                        logger.info("检测到纯文本 JSON 工具调用，正在转换...")
-                        
-                        # 构造伪造的 ToolCall 对象
-                        class MockFunction:
-                            def __init__(self, name, arguments):
-                                self.name = name
-                                self.arguments = json.dumps(arguments) if isinstance(arguments, dict) else arguments
+            # 注意：这里需要处理多行 JSON 或多个 JSON 对象的情况
+            # 兼容 Markdown 代码块格式 (```json ... ```)
+            is_potential_json = json_buffer.strip().startswith("{") or "```json" in json_buffer or "```" in json_buffer
+            
+            if not has_tool_calls and is_potential_json and "arguments" in json_buffer:
+                import uuid
+                import re
+                
+                potential_tools = []
+                
+                # 策略 1: 提取 Markdown 代码块中的内容
+                code_block_pattern = re.compile(r'```(?:json)?\s*([\s\S]*?)\s*```')
+                code_blocks = code_block_pattern.findall(json_buffer)
+                
+                for block in code_blocks:
+                    # 尝试解析代码块中的 JSON
+                    try:
+                        tool_obj = json.loads(block.strip())
+                        if isinstance(tool_obj, dict) and "name" in tool_obj and "arguments" in tool_obj:
+                            potential_tools.append(tool_obj)
+                            continue
+                    except json.JSONDecodeError:
+                        pass
+                    
+                    # 如果代码块中包含多个 JSON 对象（例如每行一个）
+                    for line in block.splitlines():
+                        line = line.strip()
+                        if not line: continue
+                        try:
+                            tool_obj = json.loads(line)
+                            if isinstance(tool_obj, dict) and "name" in tool_obj and "arguments" in tool_obj:
+                                potential_tools.append(tool_obj)
+                        except json.JSONDecodeError:
+                            pass
 
-                        class MockToolCall:
-                            def __init__(self, name, arguments):
-                                self.id = f"call_{uuid.uuid4()}"
-                                self.function = MockFunction(name, arguments)
+                # 策略 2: 如果没有从代码块中提取到，或者没有代码块，尝试全局正则匹配
+                # 匹配形如 {"name": "...", "arguments": {...}} 的结构
+                if not potential_tools:
+                    # 这是一个简化的正则，可能无法处理所有复杂的嵌套 JSON，但对于标准的工具调用通常足够
+                    json_pattern = re.compile(r'\{[^{}]*"name"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:\s*\{[^{}]*\}\s*\}')
+                    matches = json_pattern.findall(json_buffer)
+                    for match in matches:
+                        try:
+                            tool_obj = json.loads(match)
+                            if isinstance(tool_obj, dict) and "name" in tool_obj and "arguments" in tool_obj:
+                                potential_tools.append(tool_obj)
+                        except json.JSONDecodeError:
+                            pass
+                
+                # 策略 3: 尝试逐行解析整个 buffer
+                if not potential_tools:
+                    for line in json_buffer.splitlines():
+                        line = line.strip()
+                        if not line: continue
+                        # 去除可能的 markdown 标记
+                        if line.startswith("```"): continue
+                        try:
+                            tool_obj = json.loads(line)
+                            if isinstance(tool_obj, dict) and "name" in tool_obj and "arguments" in tool_obj:
+                                potential_tools.append(tool_obj)
+                        except json.JSONDecodeError:
+                            pass
+                
+                # 策略 4: 尝试解析整个 buffer (去除 markdown 标记后)
+                if not potential_tools:
+                     clean_buffer = json_buffer.replace("```json", "").replace("```", "").strip()
+                     try:
+                        tool_obj = json.loads(clean_buffer)
+                        if isinstance(tool_obj, dict) and "name" in tool_obj and "arguments" in tool_obj:
+                             potential_tools.append(tool_obj)
+                     except json.JSONDecodeError:
+                         pass
 
-                        tool_calls = [MockToolCall(potential_tool["name"], potential_tool["arguments"])]
-                        has_tool_calls = True
-                        is_intercepted_json = True
-                        # 清除之前的文本输出，避免重复显示
-                        print("\n[系统] 已拦截并执行工具调用...", end="", flush=True)
-                except json.JSONDecodeError:
-                    pass
+                if potential_tools:
+                    logger.info(f"检测到 {len(potential_tools)} 个纯文本 JSON 工具调用，正在转换...")
+                    
+                    class MockFunction:
+                        def __init__(self, name, arguments):
+                            self.name = name
+                            self.arguments = json.dumps(arguments) if isinstance(arguments, dict) else str(arguments)
+
+                    class MockToolCall:
+                        def __init__(self, name, arguments):
+                            self.id = f"call_{uuid.uuid4()}"
+                            self.function = MockFunction(name, arguments)
+
+                    for tool_obj in potential_tools:
+                        tool_calls.append(MockToolCall(tool_obj["name"], tool_obj["arguments"]))
+                    
+                    has_tool_calls = True
+                    is_intercepted_json = True
+                    # 清除之前的文本输出，避免重复显示
+                    print(f"\n[系统] 已拦截并执行 {len(tool_calls)} 个工具调用...", end="", flush=True)
 
             # 等待 delta的tool_calls的返回为空
             if has_tool_calls:
@@ -331,9 +404,29 @@ class MCPClient:
                              ]
                          })
                 
+                # 确保 tool_results 被添加到历史记录中
+                # 检查历史记录中最后一条消息是否也是 tool results 且内容相同，避免重复添加导致的死循环
+                # 这里简单判断一下最后一条消息是否是 tool 类型的
+                
+                # 更严格的死循环检测：如果最后几条消息都是 tool 类型的，且内容看起来很相似，或者数量太多
+                tool_msg_count = 0
+                for msg in reversed(self.conversation_history):
+                    if msg.get("role") == "tool":
+                        tool_msg_count += 1
+                    else:
+                        break
+                
+                if tool_msg_count > 10:
+                    logger.warning("检测到可能的死循环（连续超过10次工具调用），强制停止工具链。")
+                    return "系统检测到循环调用，已停止执行。请尝试重新表述您的问题。"
+
                 self.conversation_history.extend(tool_results)
                 
-                if all_errors:
+                # 如果工具调用成功，清空 json_buffer 以便下一轮使用
+                # 并继续循环，让模型根据工具结果生成最终回答
+                if not all_errors:
+                    continue
+                else:
                      return "工具调用失败，请检查参数或重试。"
 
             else:
