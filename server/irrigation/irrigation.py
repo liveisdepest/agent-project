@@ -4,9 +4,16 @@ from pydantic import BaseModel
 import uvicorn
 import threading
 import datetime
+import sys
+import io
 from mcp.server.fastmcp import FastMCP
 
-logging.basicConfig(level=logging.WARNING)  # 改为 WARNING，减少日志输出
+# 强制 stdout/stderr 使用 UTF-8 且行缓冲
+# 这一步至关重要，防止日志缓冲导致 MCP 客户端读取不到数据或读取延迟
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', line_buffering=True)
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', line_buffering=True)
+
+logging.basicConfig(level=logging.WARNING, stream=sys.stderr)  # 明确指定输出到 stderr
 logger = logging.getLogger(__name__)
 
 # 线程安全的全局状态存储
@@ -251,7 +258,10 @@ async def root():
 
 def run_http_server():
     """在后台线程运行 FastAPI"""
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning")
+    try:
+        uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning")
+    except Exception as e:
+        logger.error(f"HTTP Server failed to start: {e}")
 
 if __name__ == "__main__":
     # 启动 HTTP 服务器线程 (供 ESP8266 连接)
@@ -261,4 +271,10 @@ if __name__ == "__main__":
     
     # 启动 MCP 服务器 (供 AI 客户端连接)
     # 注意：mcp.run() 是阻塞的，所以 HTTP server 要在线程里跑
-    mcp.run(transport='stdio')
+    try:
+        mcp.run(transport='stdio')
+    except Exception as e:
+        logger.error(f"MCP Server crashed: {e}")
+        # 确保在崩溃时也能让主线程退出，从而关闭 HTTP 线程（如果它是 daemon 的话会自动关闭，但显式退出更安全）
+        import sys
+        sys.exit(1)

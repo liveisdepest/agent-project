@@ -1,8 +1,8 @@
 """
-Command line interface for browser-use-mcp-server.
+Browser-use MCP 服务器的命令行界面。
 
-This module provides a command-line interface for starting the browser-use MCP server.
-It wraps the existing server functionality with a CLI.
+此模块提供了一个命令行界面，用于启动 browser-use MCP 服务器。
+它将现有的服务器功能封装在一个 CLI 中。
 """
 
 import json
@@ -13,12 +13,12 @@ from typing import Optional
 import click
 from pythonjsonlogger import jsonlogger
 
-# Import directly from our package
+# 直接从我们的包导入
 from browser_use_mcp_server.server import main as server_main
 
-# Configure logging for CLI
+# 配置 CLI 日志
 logger = logging.getLogger()
-logger.handlers = []  # Remove any existing handlers
+logger.handlers = []  # 移除所有现有处理器
 handler = logging.StreamHandler(sys.stderr)
 formatter = jsonlogger.JsonFormatter(
     '{"time":"%(asctime)s","level":"%(levelname)s","name":"%(name)s","message":"%(message)s"}'
@@ -29,36 +29,36 @@ logger.setLevel(logging.INFO)
 
 
 def log_error(message: str, error: Optional[Exception] = None):
-    """Log error in JSON format to stderr"""
+    """以 JSON 格式记录错误到 stderr"""
     error_data = {"error": message, "traceback": str(error) if error else None}
-    print(json.dumps(error_data), file=sys.stderr)
+    print(json.dumps(error_data, ensure_ascii=False), file=sys.stderr)
 
 
 @click.group()
 def cli():
-    """Browser-use MCP server command line interface."""
+    """Browser-use MCP 服务器命令行界面。"""
 
 
 @cli.command()
 @click.argument("subcommand")
-@click.option("--port", default=8000, help="Port to listen on for SSE")
+@click.option("--port", default=8000, help="SSE 监听端口")
 @click.option(
     "--proxy-port",
     default=None,
     type=int,
-    help="Port for the proxy to listen on (when using stdio mode)",
+    help="代理监听端口（使用 stdio 模式时）",
 )
-@click.option("--chrome-path", default=None, help="Path to Chrome executable")
-@click.option("--window-width", default=1280, help="Browser window width")
-@click.option("--window-height", default=1100, help="Browser window height")
-@click.option("--locale", default="en-US", help="Browser locale")
+@click.option("--chrome-path", default=None, help="Chrome 可执行文件路径")
+@click.option("--window-width", default=1280, help="浏览器窗口宽度")
+@click.option("--window-height", default=1100, help="浏览器窗口高度")
+@click.option("--locale", default="en-US", help="浏览器语言区域")
 @click.option(
     "--task-expiry-minutes",
     default=60,
-    help="Minutes after which tasks are considered expired",
+    help="任务过期分钟数",
 )
 @click.option(
-    "--stdio", is_flag=True, default=False, help="Enable stdio mode with mcp-proxy"
+    "--stdio", is_flag=True, default=False, help="启用带 mcp-proxy 的 stdio 模式"
 )
 def run(
     subcommand,
@@ -71,21 +71,21 @@ def run(
     task_expiry_minutes,
     stdio,
 ):
-    """Run the browser-use MCP server.
+    """运行 browser-use MCP 服务器。
 
-    SUBCOMMAND: should be 'server'
+    SUBCOMMAND: 应该是 'server'
     """
     if subcommand != "server":
-        log_error(f"Unknown subcommand: {subcommand}. Only 'server' is supported.")
+        log_error(f"未知子命令: {subcommand}. 仅支持 'server'。")
         sys.exit(1)
 
     try:
-        # We need to construct the command line arguments to pass to the server's Click command
+        # 我们需要构造命令行参数以传递给服务器的 Click 命令
         old_argv = sys.argv.copy()
 
-        # Build a new argument list for the server command
+        # 为服务器命令构建新的参数列表
         new_argv = [
-            "server",  # Program name
+            "server",  # 程序名称
             "--port",
             str(port),
         ]
@@ -104,18 +104,18 @@ def run(
         if stdio:
             new_argv.append("--stdio")
 
-        # Replace sys.argv temporarily
+        # 临时替换 sys.argv
         sys.argv = new_argv
 
-        # Run the server's command directly
+        # 直接运行服务器的命令
         try:
             return server_main()
         finally:
-            # Restore original sys.argv
+            # 恢复原始 sys.argv
             sys.argv = old_argv
 
     except Exception as e:
-        log_error("Error starting server", e)
+        log_error("启动服务器时出错", e)
         sys.exit(1)
 
 

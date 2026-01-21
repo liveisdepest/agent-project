@@ -1,22 +1,21 @@
 """
-Browser Use MCP Server
+Browser Use MCP 服务器
 
-This module implements an MCP (Model-Control-Protocol) server for browser automation
-using the browser_use library. It provides functionality to interact with a browser instance
-via an async task queue, allowing for long-running browser tasks to be executed asynchronously
-while providing status updates and results.
+本模块实现了基于 browser_use 库的 MCP (Model-Control-Protocol) 服务器，用于浏览器自动化。
+它提供了通过异步任务队列与浏览器实例交互的功能，允许异步执行长时间运行的浏览器任务，
+并提供状态更新和结果查询。
 
-The server supports Server-Sent Events (SSE) for web-based interfaces.
+服务器支持基于 SSE (Server-Sent Events) 的 Web 接口交互。
 """
 
-# Standard library imports
+# 标准库导入
 import asyncio
 import json
 import logging
 import os
 import sys
 
-# Set up SSE transport
+# 设置 SSE 传输
 import threading
 import time
 import traceback
@@ -24,31 +23,31 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, Optional, Tuple, Union
 
-# Third-party imports
+# 第三方库导入
 import click
 import mcp.types as types
 import uvicorn
 
-# Browser-use library imports
+# Browser-use 库导入
 from browser_use import Agent
 from browser_use.browser.browser import Browser, BrowserConfig
 from browser_use.browser.context import BrowserContext, BrowserContextConfig
 from dotenv import load_dotenv
 from langchain_core.language_models import BaseLanguageModel
 
-# LLM provider
+# LLM 提供商
 from langchain_openai import ChatOpenAI
 
-# MCP server components
+# MCP 服务器组件
 from mcp.server import Server
 from mcp.server.sse import SseServerTransport
 from pythonjsonlogger import jsonlogger
 from starlette.applications import Starlette
 from starlette.routing import Mount, Route
 
-# Configure logging
+# 配置日志
 logger = logging.getLogger()
-logger.handlers = []  # Remove any existing handlers
+logger.handlers = []  # 移除所有现有处理器
 handler = logging.StreamHandler(sys.stderr)
 formatter = jsonlogger.JsonFormatter(
     '{"time":"%(asctime)s","level":"%(levelname)s","name":"%(name)s","message":"%(message)s"}'
@@ -57,76 +56,76 @@ handler.setFormatter(formatter)
 logger.addHandler(handler)
 logger.setLevel(logging.INFO)
 
-# Ensure uvicorn also logs to stderr in JSON format
+# 确保 uvicorn 也使用 JSON 格式输出日志到 stderr
 uvicorn_logger = logging.getLogger("uvicorn")
 uvicorn_logger.handlers = []
 uvicorn_logger.addHandler(handler)
 
-# Ensure all other loggers use the same format
+# 确保所有其他 logger 使用相同的格式
 logging.getLogger("browser_use").addHandler(handler)
 logging.getLogger("playwright").addHandler(handler)
 logging.getLogger("mcp").addHandler(handler)
 
-# Load environment variables
+# 加载环境变量
 load_dotenv()
 
 
 def parse_bool_env(env_var: str, default: bool = False) -> bool:
     """
-    Parse a boolean environment variable.
+    解析布尔类型的环境变量。
 
-    Args:
-        env_var: The environment variable name
-        default: Default value if not set
+    参数:
+        env_var: 环境变量名称
+        default: 未设置时的默认值
 
-    Returns:
-        Boolean value of the environment variable
+    返回:
+        环境变量的布尔值
     """
     value = os.environ.get(env_var)
     if value is None:
         return default
 
-    # Consider various representations of boolean values
+    # 考虑布尔值的各种表示形式
     return value.lower() in ("true", "yes", "1", "y", "on")
 
 
 def init_configuration() -> Dict[str, Any]:
     """
-    Initialize configuration from environment variables with defaults.
+    从环境变量初始化配置，并使用默认值。
 
-    Returns:
-        Dictionary containing all configuration parameters
+    返回:
+        包含所有配置参数的字典
     """
     config = {
-        # Browser window settings
+        # 浏览器窗口设置
         "DEFAULT_WINDOW_WIDTH": int(os.environ.get("BROWSER_WINDOW_WIDTH", 1280)),
         "DEFAULT_WINDOW_HEIGHT": int(os.environ.get("BROWSER_WINDOW_HEIGHT", 1100)),
-        # Browser config settings
-        "DEFAULT_LOCALE": os.environ.get("BROWSER_LOCALE", "en-US"),
+        # 浏览器配置设置
+        "DEFAULT_LOCALE": os.environ.get("BROWSER_LOCALE", "zh-CN"), # 默认为中文环境
         "DEFAULT_USER_AGENT": os.environ.get(
             "BROWSER_USER_AGENT",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/85.0.4183.102 Safari/537.36",
         ),
-        # Task settings
+        # 任务设置
         "DEFAULT_TASK_EXPIRY_MINUTES": int(os.environ.get("TASK_EXPIRY_MINUTES", 60)),
         "DEFAULT_ESTIMATED_TASK_SECONDS": int(
             os.environ.get("ESTIMATED_TASK_SECONDS", 60)
         ),
         "CLEANUP_INTERVAL_SECONDS": int(
             os.environ.get("CLEANUP_INTERVAL_SECONDS", 3600)
-        ),  # 1 hour
+        ),  # 1 小时
         "MAX_AGENT_STEPS": int(os.environ.get("MAX_AGENT_STEPS", 10)),
-        # Browser arguments
+        # 浏览器参数
         "BROWSER_ARGS": [
             "--no-sandbox",
             "--disable-gpu",
             "--disable-software-rasterizer",
             "--disable-dev-shm-usage",
-            "--remote-debugging-port=0",  # Use random port to avoid conflicts
+            "--remote-debugging-port=0",  # 使用随机端口以避免冲突
         ],
-        # Patient mode - if true, functions wait for task completion before returning
+        # 耐心模式 - 如果为 true，函数将等待任务完成后再返回
         "PATIENT_MODE": parse_bool_env("PATIENT", False),
-        # LLM settings
+        # LLM 设置
         "OPENAI_MODEL": os.environ.get("OPENAI_MODEL", "gpt-4o"),
         "LLM_TEMPERATURE": float(os.environ.get("LLM_TEMPERATURE", 0.0)),
     }
@@ -134,12 +133,12 @@ def init_configuration() -> Dict[str, Any]:
     return config
 
 
-# Initialize configuration
+# 初始化配置
 CONFIG = init_configuration()
 
-# Task storage for async operations
+# 用于异步操作的任务存储
 task_store: Dict[str, Dict[str, Any]] = {}
-# Storage for running asyncio tasks to allow cancellation
+# 用于存储正在运行的 asyncio 任务以便取消
 running_tasks: Dict[str, asyncio.Task] = {}
 
 
@@ -150,37 +149,37 @@ async def create_browser_context_for_task(
     locale: str = CONFIG["DEFAULT_LOCALE"],
 ) -> Tuple[Browser, BrowserContext]:
     """
-    Create a fresh browser and context for a task.
+    为任务创建一个新的浏览器和上下文。
 
-    This function creates an isolated browser instance and context
-    with proper configuration for a single task.
+    此函数创建一个隔离的浏览器实例和上下文，
+    并为单个任务进行适当的配置。
 
-    Args:
-        chrome_path: Path to Chrome executable
-        window_width: Browser window width
-        window_height: Browser window height
-        locale: Browser locale
+    参数:
+        chrome_path: Chrome 可执行文件路径
+        window_width: 浏览器窗口宽度
+        window_height: 浏览器窗口高度
+        locale: 浏览器语言区域
 
-    Returns:
-        A tuple containing the browser instance and browser context
+    返回:
+        包含浏览器实例和浏览器上下文的元组
 
-    Raises:
-        Exception: If browser or context creation fails
+    抛出:
+        Exception: 如果浏览器或上下文创建失败
     """
     try:
-        # Create browser configuration
+        # 创建浏览器配置
         browser_config = BrowserConfig(
             extra_chromium_args=CONFIG["BROWSER_ARGS"],
         )
 
-        # Set chrome path if provided
+        # 如果提供了 chrome 路径则设置
         if chrome_path:
             browser_config.chrome_instance_path = chrome_path
 
-        # Create browser instance
+        # 创建浏览器实例
         browser = Browser(config=browser_config)
 
-        # Create context configuration
+        # 创建上下文配置
         context_config = BrowserContextConfig(
             wait_for_network_idle_page_load_time=0.6,
             maximum_wait_page_load_time=1.2,
@@ -192,12 +191,12 @@ async def create_browser_context_for_task(
             viewport_expansion=0,
         )
 
-        # Create context with the browser
+        # 使用浏览器创建上下文
         context = BrowserContext(browser=browser, config=context_config)
 
         return browser, context
     except Exception as e:
-        logger.error(f"Error creating browser context: {str(e)}")
+        logger.error(f"创建浏览器上下文出错: {str(e)}")
         raise
 
 
@@ -211,28 +210,27 @@ async def run_browser_task_async(
     locale: str = CONFIG["DEFAULT_LOCALE"],
 ) -> None:
     """
-    Run a browser task asynchronously and store the result.
+    异步运行浏览器任务并存储结果。
 
-    This function executes a browser automation task with the given URL and action,
-    and updates the task store with progress and results.
+    此函数执行具有给定 URL 和操作的浏览器自动化任务，
+    并更新任务存储中的进度和结果。
 
-    When PATIENT_MODE is enabled, the calling function will wait for this function
-    to complete before returning to the client.
+    当启用 PATIENT_MODE 时，调用函数将在返回客户端之前等待此函数完成。
 
-    Args:
-        task_id: Unique identifier for the task
-        url: URL to navigate to
-        action: Action to perform after navigation
-        llm: Language model to use for browser agent
-        window_width: Browser window width
-        window_height: Browser window height
-        locale: Browser locale
+    参数:
+        task_id: 任务唯一标识符
+        url: 要导航到的 URL
+        action: 导航后执行的操作
+        llm: 浏览器代理使用的语言模型
+        window_width: 浏览器窗口宽度
+        window_height: 浏览器窗口高度
+        locale: 浏览器语言区域
     """
     browser = None
     context = None
 
     try:
-        # Update task status to running
+        # 更新任务状态为运行中
         task_store[task_id]["status"] = "running"
         task_store[task_id]["start_time"] = datetime.now().isoformat()
         task_store[task_id]["progress"] = {
@@ -241,36 +239,36 @@ async def run_browser_task_async(
             "steps": [],
         }
 
-        # Define step callback function with the correct signature
+        # 定义具有正确签名的步骤回调函数
         async def step_callback(
             browser_state: Any, agent_output: Any, step_number: int
         ) -> None:
-            # Update progress in task store
+            # 更新任务存储中的进度
             task_store[task_id]["progress"]["current_step"] = step_number
             task_store[task_id]["progress"]["total_steps"] = max(
                 task_store[task_id]["progress"]["total_steps"], step_number
             )
 
-            # Add step info with minimal details
+            # 添加包含最少细节的步骤信息
             step_info = {"step": step_number, "time": datetime.now().isoformat()}
 
-            # Add goal if available
+            # 如果可用，添加目标
             if agent_output and hasattr(agent_output, "current_state"):
                 if hasattr(agent_output.current_state, "next_goal"):
                     step_info["goal"] = agent_output.current_state.next_goal
 
-            # Add to progress steps
+            # 添加到进度步骤
             task_store[task_id]["progress"]["steps"].append(step_info)
 
-            # Log progress
-            logger.info(f"Task {task_id}: Step {step_number} completed")
+            # 记录进度
+            logger.info(f"任务 {task_id}: 第 {step_number} 步已完成")
 
-        # Define done callback function with the correct signature
+        # 定义具有正确签名的完成回调函数
         async def done_callback(history: Any) -> None:
-            # Log completion
-            logger.info(f"Task {task_id}: Completed with {len(history.history)} steps")
+            # 记录完成
+            logger.info(f"任务 {task_id}: 已完成，共 {len(history.history)} 步")
 
-            # Add final step
+            # 添加最后一步
             current_step = task_store[task_id]["progress"]["current_step"] + 1
             task_store[task_id]["progress"]["steps"].append(
                 {
@@ -280,10 +278,10 @@ async def run_browser_task_async(
                 }
             )
 
-        # Get Chrome path from environment if available
+        # 如果可用，从环境获取 Chrome 路径
         chrome_path = os.environ.get("CHROME_PATH")
 
-        # Create a fresh browser and context for this task
+        # 为此任务创建一个新的浏览器和上下文
         browser, context = await create_browser_context_for_task(
             chrome_path=chrome_path,
             window_width=window_width,
@@ -291,31 +289,31 @@ async def run_browser_task_async(
             locale=locale,
         )
 
-        # Create agent with the fresh context
+        # 使用新上下文创建代理
         agent = Agent(
-            task=f"First, navigate to {url}. Then, {action}",
+            task=f"First, navigate to {url}. Then, {action}", # 保持内部指令为英文以确保模型理解，或者根据需要改为中文
             llm=llm,
             browser_context=context,
             register_new_step_callback=step_callback,
             register_done_callback=done_callback,
         )
 
-        # Run the agent with a reasonable step limit
+        # 运行代理，设置合理的步数限制
         agent_result = await agent.run(max_steps=CONFIG["MAX_AGENT_STEPS"])
 
-        # Get the final result
+        # 获取最终结果
         final_result = agent_result.final_result()
 
-        # Check if we have a valid result
+        # 检查是否有有效结果
         if final_result and hasattr(final_result, "raise_for_status"):
             final_result.raise_for_status()
             result_text = str(final_result.text)
         else:
             result_text = (
-                str(final_result) if final_result else "No final result available"
+                str(final_result) if final_result else "无可用最终结果"
             )
 
-        # Gather essential information from the agent history
+        # 从代理历史中收集基本信息
         is_successful = agent_result.is_successful()
         has_errors = agent_result.has_errors()
         errors = agent_result.errors()
@@ -324,7 +322,7 @@ async def run_browser_task_async(
         extracted_content = agent_result.extracted_content()
         steps_taken = agent_result.number_of_steps()
 
-        # Create a focused response with the most relevant information
+        # 创建包含最相关信息的聚焦响应
         response_data = {
             "final_result": result_text,
             "success": is_successful,
@@ -336,61 +334,61 @@ async def run_browser_task_async(
             "steps_taken": steps_taken,
         }
 
-        # Store the result
+        # 存储结果
         task_store[task_id]["status"] = "completed"
         task_store[task_id]["end_time"] = datetime.now().isoformat()
         task_store[task_id]["result"] = response_data
 
     except asyncio.CancelledError:
-        logger.info(f"Task {task_id} was cancelled")
+        logger.info(f"任务 {task_id} 已取消")
         task_store[task_id]["status"] = "cancelled"
         task_store[task_id]["end_time"] = datetime.now().isoformat()
-        # No need to re-raise, we just want to mark it as cancelled
+        # 无需重新抛出，我们只想标记为已取消
 
     except Exception as e:
-        logger.error(f"Error in async browser task: {str(e)}")
+        logger.error(f"异步浏览器任务出错: {str(e)}")
         tb = traceback.format_exc()
 
-        # Store the error
+        # 存储错误
         task_store[task_id]["status"] = "failed"
         task_store[task_id]["end_time"] = datetime.now().isoformat()
         task_store[task_id]["error"] = str(e)
         task_store[task_id]["traceback"] = tb
 
     finally:
-        # Remove from running tasks
+        # 从运行任务中移除
         if task_id in running_tasks:
             del running_tasks[task_id]
 
-        # Clean up browser resources
+        # 清理浏览器资源
         try:
             if context:
                 await context.close()
             if browser:
                 await browser.close()
-            logger.info(f"Browser resources for task {task_id} cleaned up")
+            logger.info(f"任务 {task_id} 的浏览器资源已清理")
         except Exception as e:
             logger.error(
-                f"Error cleaning up browser resources for task {task_id}: {str(e)}"
+                f"清理任务 {task_id} 的浏览器资源时出错: {str(e)}"
             )
 
 
 async def cleanup_old_tasks() -> None:
     """
-    Periodically clean up old completed tasks to prevent memory leaks.
+    定期清理旧的已完成任务以防止内存泄漏。
 
-    This function runs continuously in the background, removing tasks that have been
-    completed or failed for more than 1 hour to conserve memory.
+    此函数在后台持续运行，删除已完成或失败超过 1 小时的任务
+    以节省内存。
     """
     while True:
         try:
-            # Sleep first to avoid cleaning up tasks too early
+            # 先睡眠以避免过早清理任务
             await asyncio.sleep(CONFIG["CLEANUP_INTERVAL_SECONDS"])
 
             current_time = datetime.now()
             tasks_to_remove = []
 
-            # Find completed tasks older than 1 hour
+            # 查找超过 1 小时的已完成任务
             for task_id, task_data in task_store.items():
                 if (
                     task_data["status"] in ["completed", "failed"]
@@ -399,18 +397,18 @@ async def cleanup_old_tasks() -> None:
                     end_time = datetime.fromisoformat(task_data["end_time"])
                     hours_elapsed = (current_time - end_time).total_seconds() / 3600
 
-                    if hours_elapsed > 1:  # Remove tasks older than 1 hour
+                    if hours_elapsed > 1:  # 删除超过 1 小时的任务
                         tasks_to_remove.append(task_id)
 
-            # Remove old tasks
+            # 删除旧任务
             for task_id in tasks_to_remove:
                 del task_store[task_id]
 
             if tasks_to_remove:
-                logger.info(f"Cleaned up {len(tasks_to_remove)} old tasks")
+                logger.info(f"清理了 {len(tasks_to_remove)} 个旧任务")
 
         except Exception as e:
-            logger.error(f"Error in task cleanup: {str(e)}")
+            logger.error(f"任务清理出错: {str(e)}")
 
 
 def create_mcp_server(
@@ -421,19 +419,19 @@ def create_mcp_server(
     locale: str = CONFIG["DEFAULT_LOCALE"],
 ) -> Server:
     """
-    Create and configure an MCP server for browser interaction.
+    创建并配置用于浏览器交互的 MCP 服务器。
 
-    Args:
-        llm: The language model to use for browser agent
-        task_expiry_minutes: Minutes after which tasks are considered expired
-        window_width: Browser window width
-        window_height: Browser window height
-        locale: Browser locale
+    参数:
+        llm: 浏览器代理使用的语言模型
+        task_expiry_minutes: 任务被视为过期的分钟数
+        window_width: 浏览器窗口宽度
+        window_height: 浏览器窗口高度
+        locale: 浏览器语言区域
 
-    Returns:
-        Configured MCP server instance
+    返回:
+        配置好的 MCP 服务器实例
     """
-    # Create MCP server instance
+    # 创建 MCP 服务器实例
     app = Server("browser_use")
 
     @app.call_tool()
@@ -441,32 +439,32 @@ def create_mcp_server(
         name: str, arguments: dict
     ) -> list[Union[types.TextContent, types.ImageContent, types.EmbeddedResource]]:
         """
-        Handle tool calls from the MCP client.
+        处理来自 MCP 客户端的工具调用。
 
-        Args:
-            name: The name of the tool to call
-            arguments: The arguments to pass to the tool
+        参数:
+            name: 要调用的工具名称
+            arguments: 传递给工具的参数
 
-        Returns:
-            A list of content objects to return to the client.
-            When PATIENT_MODE is enabled, the browser_use tool will wait for the task to complete
-            and return the full result immediately instead of just the task ID.
+        返回:
+            返回给客户端的内容对象列表。
+            当启用 PATIENT_MODE 时，browser_use 工具将等待任务完成
+            并立即返回完整结果，而不仅仅是任务 ID。
 
-        Raises:
-            ValueError: If required arguments are missing
+        抛出:
+            ValueError: 如果缺少必需参数
         """
-        # Handle browser_use tool
+        # 处理 browser_use 工具
         if name == "browser_use":
-            # Check required arguments
+            # 检查必需参数
             if "url" not in arguments:
-                raise ValueError("Missing required argument 'url'")
+                raise ValueError("缺少必需参数 'url'")
             if "action" not in arguments:
-                raise ValueError("Missing required argument 'action'")
+                raise ValueError("缺少必需参数 'action'")
 
-            # Generate a task ID
+            # 生成任务 ID
             task_id = str(uuid.uuid4())
 
-            # Initialize task in store
+            # 在存储中初始化任务
             task_store[task_id] = {
                 "id": task_id,
                 "status": "pending",
@@ -475,7 +473,7 @@ def create_mcp_server(
                 "created_at": datetime.now().isoformat(),
             }
 
-            # Start task in background
+            # 在后台启动任务
             _task = asyncio.create_task(
                 run_browser_task_async(
                     task_id=task_id,
@@ -488,42 +486,42 @@ def create_mcp_server(
                 )
             )
             
-            # Store the task object
+            # 存储任务对象
             running_tasks[task_id] = _task
 
-            # If PATIENT is set, wait for the task to complete
+            # 如果设置了 PATIENT，等待任务完成
             if CONFIG["PATIENT_MODE"]:
                 try:
                     await _task
-                    # Return the completed task result instead of just the ID
+                    # 返回完成的任务结果而不是 ID
                     task_data = task_store[task_id]
                     if task_data["status"] == "failed":
                         logger.error(
-                            f"Task {task_id} failed: {task_data.get('error', 'Unknown error')}"
+                            f"任务 {task_id} 失败: {task_data.get('error', '未知错误')}"
                         )
                     return [
                         types.TextContent(
                             type="text",
-                            text=json.dumps(task_data, indent=2),
+                            text=json.dumps(task_data, indent=2, ensure_ascii=False),
                         )
                     ]
                 except Exception as e:
-                    logger.error(f"Error in patient mode execution: {str(e)}")
+                    logger.error(f"耐心模式执行出错: {str(e)}")
                     traceback_str = traceback.format_exc()
-                    # Update task store with error
+                    # 更新任务存储中的错误
                     task_store[task_id]["status"] = "failed"
                     task_store[task_id]["error"] = str(e)
                     task_store[task_id]["traceback"] = traceback_str
                     task_store[task_id]["end_time"] = datetime.now().isoformat()
-                    # Return error information
+                    # 返回错误信息
                     return [
                         types.TextContent(
                             type="text",
-                            text=json.dumps(task_store[task_id], indent=2),
+                            text=json.dumps(task_store[task_id], indent=2, ensure_ascii=False),
                         )
                     ]
 
-            # Return task ID immediately with explicit sleep instruction
+            # 立即返回任务 ID 和明确的睡眠指令
             return [
                 types.TextContent(
                     type="text",
@@ -531,22 +529,23 @@ def create_mcp_server(
                         {
                             "task_id": task_id,
                             "status": "pending",
-                            "message": f"Browser task started. Please wait for {CONFIG['DEFAULT_ESTIMATED_TASK_SECONDS']} seconds, then check the result using browser_get_result or the resource URI. Always wait exactly 5 seconds between status checks.",
-                            "estimated_time": f"{CONFIG['DEFAULT_ESTIMATED_TASK_SECONDS']} seconds",
+                            "message": f"浏览器任务已启动。请等待 {CONFIG['DEFAULT_ESTIMATED_TASK_SECONDS']} 秒，然后使用 browser_get_result 或资源 URI 检查结果。请始终在状态检查之间等待 5 秒。",
+                            "estimated_time": f"{CONFIG['DEFAULT_ESTIMATED_TASK_SECONDS']} 秒",
                             "resource_uri": f"resource://browser_task/{task_id}",
                             "sleep_command": "sleep 5",
-                            "instruction": "Use the terminal command 'sleep 5' to wait 5 seconds between status checks. IMPORTANT: Always use exactly 5 seconds, no more and no less.",
+                            "instruction": "使用终端命令 'sleep 5' 等待 5 秒后再检查状态。重要提示：请务必等待 5 秒，不多不少。",
                         },
                         indent=2,
+                        ensure_ascii=False,
                     ),
                 )
             ]
 
-        # Handle browser_get_result tool
+        # 处理 browser_get_result 工具
         elif name == "browser_get_result":
-            # Get result of async task
+            # 获取异步任务结果
             if "task_id" not in arguments:
-                raise ValueError("Missing required argument 'task_id'")
+                raise ValueError("缺少必需参数 'task_id'")
 
             task_id = arguments["task_id"]
 
@@ -555,47 +554,47 @@ def create_mcp_server(
                     types.TextContent(
                         type="text",
                         text=json.dumps(
-                            {"error": "Task not found", "task_id": task_id}, indent=2
+                            {"error": "未找到任务", "task_id": task_id}, indent=2, ensure_ascii=False
                         ),
                     )
                 ]
 
-            # Get the current task data
+            # 获取当前任务数据
             task_data = task_store[task_id].copy()
 
-            # If task is still running, add simple guidance
+            # 如果任务仍在运行，添加简单的指导
             if task_data["status"] == "running":
-                # Add a simple next check suggestion
+                # 添加简单的下次检查建议
                 progress = task_data.get("progress", {})
                 current_step = progress.get("current_step", 0)
 
                 if current_step > 0:
-                    # Simple message based on current step
+                    # 基于当前步骤的简单消息
                     task_data["message"] = (
-                        f"Task is running (step {current_step}). Wait 5 seconds before checking again."
+                        f"任务正在运行 (第 {current_step} 步)。请等待 5 秒后再次检查。"
                     )
                     task_data["sleep_command"] = "sleep 5"
                     task_data["instruction"] = (
-                        "Use the terminal command 'sleep 5' to wait 5 seconds before checking again. IMPORTANT: Always use exactly 5 seconds, no more and no less."
+                        "使用终端命令 'sleep 5' 等待 5 秒后再检查状态。重要提示：请务必等待 5 秒，不多不少。"
                     )
                 else:
                     task_data["message"] = (
-                        "Task is starting. Wait 5 seconds before checking again."
+                        "任务正在启动。请等待 5 秒后再次检查。"
                     )
                     task_data["sleep_command"] = "sleep 5"
                     task_data["instruction"] = (
-                        "Use the terminal command 'sleep 5' to wait 5 seconds before checking again. IMPORTANT: Always use exactly 5 seconds, no more and no less."
+                        "使用终端命令 'sleep 5' 等待 5 秒后再检查状态。重要提示：请务必等待 5 秒，不多不少。"
                     )
 
-            # Return current task status and result if available
+            # 返回当前任务状态和结果（如果可用）
             return [
-                types.TextContent(type="text", text=json.dumps(task_data, indent=2))
+                types.TextContent(type="text", text=json.dumps(task_data, indent=2, ensure_ascii=False))
             ]
 
-        # Handle browser_stop_task tool
+        # 处理 browser_stop_task 工具
         elif name == "browser_stop_task":
             if "task_id" not in arguments:
-                raise ValueError("Missing required argument 'task_id'")
+                raise ValueError("缺少必需参数 'task_id'")
             
             task_id = arguments["task_id"]
             
@@ -604,7 +603,7 @@ def create_mcp_server(
                 return [
                     types.TextContent(
                         type="text",
-                        text=json.dumps({"status": "cancelled", "task_id": task_id}, indent=2)
+                        text=json.dumps({"status": "cancelled", "task_id": task_id}, indent=2, ensure_ascii=False)
                     )
                 ]
             else:
@@ -613,12 +612,13 @@ def create_mcp_server(
                         type="text",
                         text=json.dumps(
                             {"status": "not_found_or_already_finished", "task_id": task_id},
-                            indent=2
+                            indent=2,
+                            ensure_ascii=False
                         )
                     )
                 ]
 
-        # Handle browser_list_tasks tool
+        # 处理 browser_list_tasks 工具
         elif name == "browser_list_tasks":
             active_tasks = []
             for t_id, t_data in task_store.items():
@@ -633,24 +633,24 @@ def create_mcp_server(
             return [
                 types.TextContent(
                     type="text",
-                    text=json.dumps({"active_tasks": active_tasks}, indent=2)
+                    text=json.dumps({"active_tasks": active_tasks}, indent=2, ensure_ascii=False)
                 )
             ]
 
         else:
-            raise ValueError(f"Unknown tool: {name}")
+            raise ValueError(f"未知工具: {name}")
 
     @app.list_tools()
     async def list_tools() -> list[types.Tool]:
         """
-        List the available tools for the MCP client.
+        列出 MCP 客户端可用的工具。
 
-        Returns different tool descriptions based on the PATIENT_MODE configuration.
-        When PATIENT_MODE is enabled, the browser_use tool description indicates it returns
-        complete results directly. When disabled, it indicates async operation.
+        根据 PATIENT_MODE 配置返回不同的工具描述。
+        当启用 PATIENT_MODE 时，browser_use 工具描述指示它直接返回完整结果。
+        禁用时，指示它是异步操作。
 
-        Returns:
-            A list of tool definitions appropriate for the current configuration
+        返回:
+            适合当前配置的工具定义列表
         """
         patient_mode = CONFIG["PATIENT_MODE"]
 
@@ -658,53 +658,53 @@ def create_mcp_server(
             return [
                 types.Tool(
                     name="browser_use",
-                    description="Performs a browser action and returns the complete result directly (patient mode active)",
+                    description="执行浏览器操作并直接返回完整结果（耐心模式已激活）",
                     inputSchema={
                         "type": "object",
                         "required": ["url", "action"],
                         "properties": {
                             "url": {
                                 "type": "string",
-                                "description": "URL to navigate to",
+                                "description": "要导航到的 URL",
                             },
                             "action": {
                                 "type": "string",
-                                "description": "Action to perform in the browser",
+                                "description": "在浏览器中执行的操作",
                             },
                         },
                     },
                 ),
                 types.Tool(
                     name="browser_get_result",
-                    description="Gets the result of an asynchronous browser task (not needed in patient mode as browser_use returns complete results directly)",
+                    description="获取异步浏览器任务的结果（在耐心模式下不需要，因为 browser_use 直接返回完整结果）",
                     inputSchema={
                         "type": "object",
                         "required": ["task_id"],
                         "properties": {
                             "task_id": {
                                 "type": "string",
-                                "description": "ID of the task to get results for",
+                                "description": "要获取结果的任务 ID",
                             }
                         },
                     },
                 ),
                 types.Tool(
                     name="browser_stop_task",
-                    description="Stops/cancels a running browser task",
+                    description="停止/取消正在运行的浏览器任务",
                     inputSchema={
                         "type": "object",
                         "required": ["task_id"],
                         "properties": {
                             "task_id": {
                                 "type": "string",
-                                "description": "ID of the task to stop",
+                                "description": "要停止的任务 ID",
                             }
                         },
                     },
                 ),
                 types.Tool(
                     name="browser_list_tasks",
-                    description="Lists all currently active browser tasks",
+                    description="列出所有当前活动的浏览器任务",
                     inputSchema={
                         "type": "object",
                         "properties": {},
@@ -715,53 +715,53 @@ def create_mcp_server(
             return [
                 types.Tool(
                     name="browser_use",
-                    description="Performs a browser action and returns a task ID for async execution",
+                    description="执行浏览器操作并返回用于异步执行的任务 ID",
                     inputSchema={
                         "type": "object",
                         "required": ["url", "action"],
                         "properties": {
                             "url": {
                                 "type": "string",
-                                "description": "URL to navigate to",
+                                "description": "要导航到的 URL",
                             },
                             "action": {
                                 "type": "string",
-                                "description": "Action to perform in the browser",
+                                "description": "在浏览器中执行的操作",
                             },
                         },
                     },
                 ),
                 types.Tool(
                     name="browser_get_result",
-                    description="Gets the result of an asynchronous browser task",
+                    description="获取异步浏览器任务的结果",
                     inputSchema={
                         "type": "object",
                         "required": ["task_id"],
                         "properties": {
                             "task_id": {
                                 "type": "string",
-                                "description": "ID of the task to get results for",
+                                "description": "要获取结果的任务 ID",
                             }
                         },
                     },
                 ),
                 types.Tool(
                     name="browser_stop_task",
-                    description="Stops/cancels a running browser task",
+                    description="停止/取消正在运行的浏览器任务",
                     inputSchema={
                         "type": "object",
                         "required": ["task_id"],
                         "properties": {
                             "task_id": {
                                 "type": "string",
-                                "description": "ID of the task to stop",
+                                "description": "要停止的任务 ID",
                             }
                         },
                     },
                 ),
                 types.Tool(
                     name="browser_list_tasks",
-                    description="Lists all currently active browser tasks",
+                    description="列出所有当前活动的浏览器任务",
                     inputSchema={
                         "type": "object",
                         "properties": {},
@@ -772,20 +772,20 @@ def create_mcp_server(
     @app.list_resources()
     async def list_resources() -> list[types.Resource]:
         """
-        List the available resources for the MCP client.
+        列出 MCP 客户端可用的资源。
 
-        Returns:
-            A list of resource definitions
+        返回:
+            资源定义列表
         """
-        # List all completed tasks as resources
+        # 列出所有已完成的任务作为资源
         resources = []
         for task_id, task_data in task_store.items():
             if task_data["status"] in ["completed", "failed"]:
                 resources.append(
                     types.Resource(
                         uri=f"resource://browser_task/{task_id}",
-                        title=f"Browser Task Result: {task_id[:8]}",
-                        description=f"Result of browser task for URL: {task_data.get('url', 'unknown')}",
+                        title=f"浏览器任务结果: {task_id[:8]}",
+                        description=f"URL 的浏览器任务结果: {task_data.get('url', '未知')}",
                     )
                 )
         return resources
@@ -793,21 +793,21 @@ def create_mcp_server(
     @app.read_resource()
     async def read_resource(uri: str) -> list[types.ResourceContents]:
         """
-        Read a resource for the MCP client.
+        为 MCP 客户端读取资源。
 
-        Args:
-            uri: The URI of the resource to read
+        参数:
+            uri: 要读取的资源 URI
 
-        Returns:
-            The contents of the resource
+        返回:
+            资源内容
         """
-        # Extract task ID from URI
+        # 从 URI 提取任务 ID
         if not uri.startswith("resource://browser_task/"):
             return [
                 types.ResourceContents(
                     type="text",
                     text=json.dumps(
-                        {"error": f"Invalid resource URI: {uri}"}, indent=2
+                        {"error": f"无效的资源 URI: {uri}"}, indent=2, ensure_ascii=False
                     ),
                 )
             ]
@@ -817,53 +817,53 @@ def create_mcp_server(
             return [
                 types.ResourceContents(
                     type="text",
-                    text=json.dumps({"error": f"Task not found: {task_id}"}, indent=2),
+                    text=json.dumps({"error": f"未找到任务: {task_id}"}, indent=2, ensure_ascii=False),
                 )
             ]
 
-        # Return task data
+        # 返回任务数据
         return [
             types.ResourceContents(
-                type="text", text=json.dumps(task_store[task_id], indent=2)
+                type="text", text=json.dumps(task_store[task_id], indent=2, ensure_ascii=False)
             )
         ]
 
-    # Add cleanup_old_tasks function to app for later scheduling
+    # 将 cleanup_old_tasks 函数添加到 app 以便稍后调度
     app.cleanup_old_tasks = cleanup_old_tasks
 
     return app
 
 
 @click.command()
-@click.option("--port", default=8000, help="Port to listen on for SSE")
+@click.option("--port", default=8000, help="SSE 监听端口")
 @click.option(
     "--proxy-port",
     default=None,
     type=int,
-    help="Port for the proxy to listen on. If specified, enables proxy mode.",
+    help="代理监听端口。如果指定，将启用代理模式。",
 )
-@click.option("--chrome-path", default=None, help="Path to Chrome executable")
+@click.option("--chrome-path", default=None, help="Chrome 可执行文件路径")
 @click.option(
     "--window-width",
     default=CONFIG["DEFAULT_WINDOW_WIDTH"],
-    help="Browser window width",
+    help="浏览器窗口宽度",
 )
 @click.option(
     "--window-height",
     default=CONFIG["DEFAULT_WINDOW_HEIGHT"],
-    help="Browser window height",
+    help="浏览器窗口高度",
 )
-@click.option("--locale", default=CONFIG["DEFAULT_LOCALE"], help="Browser locale")
+@click.option("--locale", default=CONFIG["DEFAULT_LOCALE"], help="浏览器语言区域")
 @click.option(
     "--task-expiry-minutes",
     default=CONFIG["DEFAULT_TASK_EXPIRY_MINUTES"],
-    help="Minutes after which tasks are considered expired",
+    help="任务过期分钟数",
 )
 @click.option(
     "--stdio",
     is_flag=True,
     default=False,
-    help="Enable stdio mode. If specified, enables proxy mode.",
+    help="启用 stdio 模式。如果指定，将启用代理模式。",
 )
 def main(
     port: int,
@@ -876,44 +876,44 @@ def main(
     stdio: bool,
 ) -> int:
     """
-    Run the browser-use MCP server.
+    运行 browser-use MCP 服务器。
 
-    This function initializes the MCP server and runs it with the SSE transport.
-    Each browser task will create its own isolated browser context.
+    此函数初始化 MCP 服务器并使用 SSE 传输运行它。
+    每个浏览器任务都将创建自己隔离的浏览器上下文。
 
-    The server can run in two modes:
-    1. Direct SSE mode (default): Just runs the SSE server
-    2. Proxy mode (enabled by --stdio or --proxy-port): Runs both SSE server and mcp-proxy
+    服务器可以在两种模式下运行：
+    1. 直接 SSE 模式（默认）：仅运行 SSE 服务器
+    2. 代理模式（通过 --stdio 或 --proxy-port 启用）：同时运行 SSE 服务器和 mcp-proxy
 
-    Args:
-        port: Port to listen on for SSE
-        proxy_port: Port for the proxy to listen on. If specified, enables proxy mode.
-        chrome_path: Path to Chrome executable
-        window_width: Browser window width
-        window_height: Browser window height
-        locale: Browser locale
-        task_expiry_minutes: Minutes after which tasks are considered expired
-        stdio: Enable stdio mode. If specified, enables proxy mode.
+    参数:
+        port: SSE 监听端口
+        proxy_port: 代理监听端口。如果指定，启用代理模式。
+        chrome_path: Chrome 可执行文件路径
+        window_width: 浏览器窗口宽度
+        window_height: 浏览器窗口高度
+        locale: 浏览器语言区域
+        task_expiry_minutes: 任务过期分钟数
+        stdio: 启用 stdio 模式。如果指定，启用代理模式。
 
-    Returns:
-        Exit code (0 for success)
+    返回:
+        退出代码（0 表示成功）
     """
-    # Store Chrome path in environment variable if provided
+    # 如果提供了 Chrome 路径，则存储在环境变量中
     if chrome_path:
         os.environ["CHROME_PATH"] = chrome_path
-        logger.info(f"Using Chrome path: {chrome_path}")
+        logger.info(f"使用 Chrome 路径: {chrome_path}")
     else:
         logger.info(
-            "No Chrome path specified, letting Playwright use its default browser"
+            "未指定 Chrome 路径，让 Playwright 使用其默认浏览器"
         )
 
-    # Initialize LLM
+    # 初始化 LLM
     llm = ChatOpenAI(
         model=CONFIG["OPENAI_MODEL"],
         temperature=CONFIG["LLM_TEMPERATURE"],
     )
 
-    # Create MCP server
+    # 创建 MCP 服务器
     app = create_mcp_server(
         llm=llm,
         task_expiry_minutes=task_expiry_minutes,
@@ -924,9 +924,9 @@ def main(
 
     sse = SseServerTransport("/messages/")
 
-    # Create the Starlette app for SSE
+    # 为 SSE 创建 Starlette 应用
     async def handle_sse(request):
-        """Handle SSE connections from clients."""
+        """处理来自客户端的 SSE 连接。"""
         try:
             async with sse.connect_sse(
                 request.scope, request.receive, request._send
@@ -935,7 +935,7 @@ def main(
                     streams[0], streams[1], app.create_initialization_options()
                 )
         except Exception as e:
-            logger.error(f"Error in handle_sse: {str(e)}")
+            logger.error(f"handle_sse 出错: {str(e)}")
             raise
 
     starlette_app = Starlette(
@@ -946,34 +946,34 @@ def main(
         ],
     )
 
-    # Add startup event
+    # 添加启动事件
     @starlette_app.on_event("startup")
     async def startup_event():
-        """Initialize the server on startup."""
-        logger.info("Starting MCP server...")
+        """在启动时初始化服务器。"""
+        logger.info("正在启动 MCP 服务器...")
 
-        # Sanity checks for critical configuration
+        # 关键配置的健全性检查
         if port <= 0 or port > 65535:
-            logger.error(f"Invalid port number: {port}")
-            raise ValueError(f"Invalid port number: {port}")
+            logger.error(f"无效的端口号: {port}")
+            raise ValueError(f"无效的端口号: {port}")
 
         if window_width <= 0 or window_height <= 0:
-            logger.error(f"Invalid window dimensions: {window_width}x{window_height}")
+            logger.error(f"无效的窗口尺寸: {window_width}x{window_height}")
             raise ValueError(
-                f"Invalid window dimensions: {window_width}x{window_height}"
+                f"无效的窗口尺寸: {window_width}x{window_height}"
             )
 
         if task_expiry_minutes <= 0:
-            logger.error(f"Invalid task expiry minutes: {task_expiry_minutes}")
-            raise ValueError(f"Invalid task expiry minutes: {task_expiry_minutes}")
+            logger.error(f"无效的任务过期分钟数: {task_expiry_minutes}")
+            raise ValueError(f"无效的任务过期分钟数: {task_expiry_minutes}")
 
-        # Start background task cleanup
+        # 启动后台任务清理
         asyncio.create_task(app.cleanup_old_tasks())
-        logger.info("Task cleanup process scheduled")
+        logger.info("任务清理进程已调度")
 
-    # Function to run uvicorn in a separate thread
+    # 在单独线程中运行 uvicorn 的函数
     def run_uvicorn():
-        # Configure uvicorn to use JSON logging
+        # 配置 uvicorn 使用 JSON 日志
         log_config = {
             "version": 1,
             "disable_existing_loggers": False,
@@ -1006,16 +1006,16 @@ def main(
             log_level="info",
         )
 
-    # If proxy mode is enabled, run both the SSE server and mcp-proxy
+    # 如果启用了代理模式，同时运行 SSE 服务器和 mcp-proxy
     if stdio:
         import subprocess  # nosec
 
-        # Start the SSE server in a separate thread
+        # 在单独线程中启动 SSE 服务器
         sse_thread = threading.Thread(target=run_uvicorn)
         sse_thread.daemon = True
         sse_thread.start()
 
-        # Give the SSE server a moment to start
+        # 给 SSE 服务器一点启动时间
         time.sleep(1)
 
         proxy_cmd = [
@@ -1027,21 +1027,21 @@ def main(
             "*",
         ]
 
-        logger.info(f"Running proxy command: {' '.join(proxy_cmd)}")
+        logger.info(f"运行代理命令: {' '.join(proxy_cmd)}")
         logger.info(
-            f"SSE server running on port {port}, proxy running on port {proxy_port}"
+            f"SSE 服务器运行在端口 {port}, 代理运行在端口 {proxy_port}"
         )
 
         try:
-            # Using trusted command arguments from CLI parameters
+            # 使用来自 CLI 参数的可信命令参数
             with subprocess.Popen(proxy_cmd) as proxy_process:  # nosec
                 proxy_process.wait()
         except Exception as e:
-            logger.error(f"Error starting mcp-proxy: {str(e)}")
-            logger.error(f"Command was: {' '.join(proxy_cmd)}")
+            logger.error(f"启动 mcp-proxy 出错: {str(e)}")
+            logger.error(f"命令是: {' '.join(proxy_cmd)}")
             return 1
     else:
-        logger.info(f"Running in direct SSE mode on port {port}")
+        logger.info(f"在端口 {port} 上以直接 SSE 模式运行")
         run_uvicorn()
 
     return 0

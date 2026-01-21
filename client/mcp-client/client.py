@@ -12,6 +12,7 @@ from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
 import json
 import logging
+from prompts import ORCHESTRATOR_PROMPT, PERCEPTION_PROMPT, REASONING_PROMPT, ACTION_PROMPT
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -19,74 +20,7 @@ logger = logging.getLogger(__name__)
 # 加载 .env 文件
 load_dotenv()
 
-SYSTEM_PROMPT = """你是一个智能农业决策助手。你的目标是协调多个工具（天气、灌溉、浏览器、文件系统）来为用户提供精准的农业建议。
-
-**核心工作流程 (SOP)：**
-
-当用户询问关于作物灌溉或生长环境的问题时（例如："曲靖今天天气怎么样？可以结合传感器告诉我小麦需要灌溉吗？"）：
-
-1.  **第一步：获取上下文信息**
-    *   调用 `irrigation.get_sensor_data` 获取当前的土壤湿度和环境温湿度。
-    *   调用 `weather.get_observe` 或 `weather.get_forecast_week` 获取指定地点的天气。
-    
-
-2.  **第二步：获取知识（如果需要）**
-    *   如果本地工具数据不足以得出结论，或用户明确要求"查一下/搜索/外部资料"：
-    *   调用 `browser_use` 工具访问搜索引擎页面（例如 `https://www.bing.com/search?q=小麦+需水量`），并在 `action` 里说明要提取/总结的要点。
-    *   若 `browser_use` 返回的是 task_id（异步模式），则继续调用 `browser_get_result` 获取最终结果。
-
-3.  **第三步：综合分析与建议**
-    *   **优先级规则**：**土壤湿度**是最高优先级的判断依据。
-    *   如果土壤湿度低于 20%（尤其是 0%），这属于**严重缺水**，除非当前正在下暴雨，否则**必须建议立即灌溉**。此时气温低或多云都不是拒绝灌溉的理由。
-    *   结合 **天气**（是否有雨？）、**土壤湿度**（是否干燥？）、**作物习性**（是否处于需水期？）。
-    *   给出明确的建议：是否需要灌溉？如果需要，灌溉的原因是什么？
-
-4.  **第四步：执行行动（仅在用户授权后）**
-    *   **开启水泵**：只有当用户明确说"打开水泵"、"浇水"时，才调用 `irrigation.control_pump(turn_on=True)`。
-    *   **关闭水泵**：当用户说"关闭水泵"、"停止灌溉"时，应立即调用 `irrigation.control_pump(turn_on=False)`。
-    *   **禁止**在用户没有明确指令的情况下自动开启水泵。
-
-**重要规则：**
-*   **允许多工具链**：针对同一个用户问题，可以连续调用多个工具来收集信息（按顺序执行，拿到一个结果后继续执行下一个），直到足够回答为止。
-*   **优先自动收集**：若问题需要天气与土壤信息，直接调用 `weather.*` 与 `irrigation.*` 获取数据，不要反问用户是否要查。
-*   **必要时再上网**：只有在本地工具数据不足以得出结论时，才使用 `browser-use` 获取公开信息补充依据。
-*   **不要拒绝联网**：你可以通过 `browser_use` 工具进行外部检索；不要声称"无法访问外部搜索引擎/网络请求"。
-*   **数据驱动**：不要瞎猜。必须基于工具返回的真实数据说话。
-
-**回复风格指南：**
-
-你需要像一个专业的农业顾问一样，用自然、流畅的语言与用户交流。不要使用固定模板，而是根据实际情况灵活组织语言。
-
-**必须包含的核心信息：**
-1. **当前环境状况**：清晰说明实时天气、传感器数据（土壤湿度、温度、空气湿度）和设备状态
-2. **作物需求分析**：结合作物类型和生长阶段，说明当前的水分需求情况
-3. **决策建议**：基于数据给出明确的灌溉建议，并解释原因
-4. **操作指引**：告诉用户接下来该做什么
-
-**决策逻辑优先级：**
-- 土壤湿度是最关键的指标
-- 土壤湿度 < 20%：严重缺水，通常需要立即灌溉（除非正在下大雨）
-- 土壤湿度 20-40%：可能需要灌溉，结合天气预报和作物需求判断
-- 土壤湿度 > 60%：水分充足，一般不需要灌溉
-
-**语言风格要求：**
-- 用自然、专业但易懂的语言表达
-- 根据具体情况灵活调整表述方式
-- 重要信息可以用 emoji 和加粗强调，但不要过度使用
-- 避免机械地填充模板，要像真人顾问一样思考和表达
-- 当情况紧急时（如土壤湿度0%），语气要更加明确和果断
-- 当情况正常时，可以更加从容和详细地分析
-
-**示例风格（仅供参考，不要照搬）：**
-"根据刚才获取的数据，曲靖目前气温11.5°C，天气晴朗。但是传感器显示土壤湿度为0%，这是一个非常严重的缺水信号。
-
-对于玉米来说，整个生长期都需要充足的水分供应，尤其是在拔节期和抽穗期。当前土壤完全干燥的状态会严重影响作物生长，甚至可能导致植株萎蔫。
-
-虽然气温不高，但土壤湿度0%意味着根系已经无法吸收到水分。查看未来一周的天气预报，主要是多云天气，短期内没有降雨计划。因此**我强烈建议立即开启灌溉**。
-
-如果你同意，请回复"开启水泵"，我会立即启动灌溉系统。"
-"""
-
+# SYSTEM_PROMPT Removed in favor of multi-agent prompts
 
 class MCPClient:
     def __init__(self, connection_timeout: int = 60, max_retries: int = 3, tool_timeout: int = 120):
@@ -99,6 +33,9 @@ class MCPClient:
         self.sessions = {}
         self.tools_map = {}
         self.conversation_history = []
+        
+        # 状态管理
+        self.pending_decision = None
         
         # 超时和重试配置
         self.connection_timeout = connection_timeout
@@ -141,12 +78,14 @@ class MCPClient:
             command = server_config.get("command", None)
             args = server_config.get("args", [])
             env_config = server_config.get("env", None)
+            cwd = server_config.get("cwd", None)
             timeout = server_config.get("timeout", None)
             max_retries = server_config.get("max_retries", None)
             
             env = self._build_child_env(server_id, env_config)
             
             # 尝试连接，失败则跳过
+            print(f"DEBUG: Attempting to connect to {server_id}...")
             if url:
                 success = await self.connect_to_sse_server(
                     server_id,
@@ -154,6 +93,7 @@ class MCPClient:
                     command=command,
                     args=args,
                     env=env,
+                    cwd=cwd,
                     timeout=timeout,
                     max_retries=max_retries,
                 )
@@ -161,14 +101,17 @@ class MCPClient:
                 if not command:
                     logger.error(f"❌ 服务端 {server_id} 缺少 command/url 配置，跳过")
                     continue
+                print(f"DEBUG: Connecting to local server {server_id} with command: {command} {args}")
                 success = await self.connect_to_local_server(
                     server_id,
                     command,
                     args,
                     env,
+                    cwd=cwd,
                     timeout=timeout,
                     max_retries=max_retries,
                 )
+            print(f"DEBUG: Connection to {server_id} result: {success}")
             if success:
                 successful_connections += 1
 
@@ -203,6 +146,33 @@ class MCPClient:
             with suppress(Exception):
                 await asyncio.wait_for(process.wait(), timeout=5)
 
+    async def _connect_with_retry(self, server_id: str, connect_func, max_retries: int, timeout: int):
+        """统一的连接重试逻辑"""
+        if server_id in self.sessions:
+            logger.warning(f"服务端 {server_id} 已经连接，跳过")
+            return True
+
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"正在连接 {server_id}... ({attempt + 1}/{max_retries})")
+                await connect_func()
+                logger.info(f"✅ 成功连接: {server_id}")
+                return True
+            except asyncio.TimeoutError:
+                logger.error(f"❌ {server_id} 超时 ({attempt + 1}/{max_retries})")
+            except Exception as e:
+                import traceback
+                logger.error(f"❌ {server_id} 失败 ({attempt + 1}/{max_retries}): {e}")
+                logger.error(traceback.format_exc())
+            
+            if attempt < max_retries - 1:
+                wait_time = 2 ** attempt
+                logger.info(f"⏳ {wait_time}秒后重试 {server_id}...")
+                await asyncio.sleep(wait_time)
+
+        logger.error(f"🚫 {server_id} 连接失败，已达最大重试次数")
+        return False
+
     async def connect_to_sse_server(
         self,
         server_id: str,
@@ -210,66 +180,60 @@ class MCPClient:
         command: str | None,
         args: list,
         env: dict,
+        cwd: str | None = None,
         timeout: int | None = None,
         max_retries: int | None = None,
     ):
-        if timeout is None:
-            timeout = self.connection_timeout
-        if max_retries is None:
-            max_retries = self.max_retries
+        timeout = timeout or self.connection_timeout
+        max_retries = max_retries or self.max_retries
 
-        if server_id in self.sessions:
-            logger.warning(f"服务端 {server_id} 已经连接，跳过重复连接")
-            return True
-
-        for attempt in range(max_retries):
+        async def _connect():
             attempt_stack = AsyncExitStack()
             process = None
             try:
-                logger.info(f"正在连接服务端 {server_id}... (尝试 {attempt + 1}/{max_retries})")
-
+                # 检查端点是否已存活
                 should_start = command is not None
-                try:
-                    if await self._is_sse_endpoint_alive(url):
-                        should_start = False
-                except Exception:
-                    pass
-
                 if should_start:
-                    process = await asyncio.create_subprocess_exec(command, *args, env=env)
-                    self._server_processes[server_id] = process
-                    await asyncio.sleep(0.5)
+                    try:
+                        if await self._is_sse_endpoint_alive(url):
+                            should_start = False
+                    except Exception:
+                        pass
 
+                # 启动进程（如需要）
+                if should_start:
+                    process = await asyncio.create_subprocess_exec(command, *args, env=env, cwd=cwd)
+                    self._server_processes[server_id] = process
+                    
+                    # 等待服务启动
+                    start_time = time.monotonic()
+                    while time.monotonic() - start_time < 10:
+                        if await self._is_sse_endpoint_alive(url):
+                            break
+                        await asyncio.sleep(0.5)
+                    else:
+                         logger.warning(f"⚠️ 服务端 {server_id} 启动较慢，尝试直接连接...")
+
+                # 建立连接
                 transport = await attempt_stack.enter_async_context(
-                    sse_client(url, timeout=5, sse_read_timeout=60 * 10)
+                    sse_client(url, timeout=5, sse_read_timeout=600)
                 )
                 read_stream, write_stream = transport
                 session = await attempt_stack.enter_async_context(ClientSession(read_stream, write_stream))
-                await self._await_with_timeout(session.initialize(), timeout)
+                await asyncio.wait_for(session.initialize(), timeout=timeout)
 
                 self._server_exit_stacks[server_id] = attempt_stack
                 self.sessions[server_id] = {"session": session}
-                logger.info(f"✅ 成功连接到 MCP 服务: {server_id}")
-                return True
-            except asyncio.TimeoutError:
-                logger.error(f"❌ 连接服务端 {server_id} 超时 (尝试 {attempt + 1}/{max_retries})，超时时间: {timeout}秒")
-            except Exception as e:
-                logger.error(f"❌ 连接服务端 {server_id} 失败 (尝试 {attempt + 1}/{max_retries}): {str(e)}")
-            
-            with suppress(Exception):
-                await attempt_stack.aclose()
-            if process is not None:
+            except Exception:
                 with suppress(Exception):
-                    await self._terminate_process(process)
-                self._server_processes.pop(server_id, None)
+                    await attempt_stack.aclose()
+                if process:
+                    with suppress(Exception):
+                        await self._terminate_process(process)
+                    self._server_processes.pop(server_id, None)
+                raise
 
-            if attempt < max_retries - 1:
-                wait_time = 2 ** attempt
-                logger.info(f"⏳ {wait_time}秒后重试连接 {server_id}...")
-                await asyncio.sleep(wait_time)
-
-        logger.error(f"🚫 服务端 {server_id} 连接失败，已达到最大重试次数 ({max_retries})，跳过该服务")
-        return False
+        return await self._connect_with_retry(server_id, _connect, max_retries, timeout)
 
     async def connect_to_local_server(
         self,
@@ -277,74 +241,37 @@ class MCPClient:
         command: str,
         args: list,
         env: dict,
+        cwd: str | None = None,
         timeout: int | None = None,
         max_retries: int | None = None,
     ):
-        """
-        连接到本地 MCP 服务（带超时和重试机制）
-        :param server_id: 服务端标识符
-        :param command: 本地服务的启动命令
-        :param args: 启动命令的参数
-        :param env: 环境变量
-        :param timeout: 连接超时时间（秒）
-        :param max_retries: 最大重试次数
-        """
+        timeout = timeout or self.connection_timeout
+        max_retries = max_retries or self.max_retries
 
-        if timeout is None:
-            timeout = self.connection_timeout
-        if max_retries is None:
-            max_retries = self.max_retries
-
-        if server_id in self.sessions:
-            logger.warning(f"服务端 {server_id} 已经连接，跳过重复连接")
-            return True
-
-        for attempt in range(max_retries):
+        async def _connect():
+            server_params = StdioServerParameters(
+                command=command, 
+                args=args, 
+                env=env,
+                cwd=cwd,
+                encoding_error_handler="ignore"
+            )
+            attempt_stack = AsyncExitStack()
             try:
-                logger.info(f"正在连接服务端 {server_id}... (尝试 {attempt + 1}/{max_retries})")
+                stdio_transport = await attempt_stack.enter_async_context(stdio_client(server_params))
+                stdio, write = stdio_transport
+                session = await attempt_stack.enter_async_context(ClientSession(stdio, write))
+                await asyncio.wait_for(session.initialize(), timeout=timeout)
                 
-                await self._do_connect(server_id, command, args, env, initialize_timeout=timeout)
-                
-                logger.info(f"✅ 成功连接到 MCP 服务: {server_id}")
-                return True
-                
-            except asyncio.TimeoutError:
-                logger.error(f"❌ 连接服务端 {server_id} 超时 (尝试 {attempt + 1}/{max_retries})，超时时间: {timeout}秒")
-            except Exception as e:
-                logger.error(f"❌ 连接服务端 {server_id} 失败 (尝试 {attempt + 1}/{max_retries}): {str(e)}")
-            
-            # 如果不是最后一次尝试，等待一段时间再重试
-            if attempt < max_retries - 1:
-                wait_time = 2 ** attempt  # 指数退避：2秒, 4秒, 8秒
-                logger.info(f"⏳ {wait_time}秒后重试连接 {server_id}...")
-                await asyncio.sleep(wait_time)
+                self._server_exit_stacks[server_id] = attempt_stack
+                self.sessions[server_id] = {"session": session}
+            except Exception:
+                with suppress(Exception):
+                    await attempt_stack.aclose()
+                raise
 
-        logger.error(f"🚫 服务端 {server_id} 连接失败，已达到最大重试次数 ({max_retries})，跳过该服务")
-        return False
+        return await self._connect_with_retry(server_id, _connect, max_retries, timeout)
 
-    async def _do_connect(
-        self,
-        server_id: str,
-        command: str,
-        args: list,
-        env: dict,
-        initialize_timeout: int,
-    ):
-        """执行实际的连接操作"""
-        server_params = StdioServerParameters(command=command, args=args, env=env)
-        attempt_stack = AsyncExitStack()
-        try:
-            stdio_transport = await attempt_stack.enter_async_context(stdio_client(server_params))
-            stdio, write = stdio_transport
-            session = await attempt_stack.enter_async_context(ClientSession(stdio, write))
-            await self._await_with_timeout(session.initialize(), initialize_timeout)
-        except BaseException:
-            with suppress(Exception):
-                await attempt_stack.aclose()
-            raise
-
-        self._server_exit_stacks[server_id] = attempt_stack
-        self.sessions[server_id] = {"session": session}
     
     async def list_tools(self):
         """列出所有服务端的工具并将详细信息存储起来（容错处理）"""
@@ -398,48 +325,40 @@ class MCPClient:
             })
         return available_tools
     
-    async def process_query(self, query: str) -> str:
-        # 确保有 System Prompt
-        if not self.conversation_history:
-            self.conversation_history.append({
-                "role": "system", 
-                "content": SYSTEM_PROMPT
-            })
+    def _append_assistant_tool_calls(self, tool_calls: list[dict], history: list = None):
+        target_history = history if history is not None else self.conversation_history
+        target_history.append(
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": {"name": tc["name"], "arguments": tc["arguments"]},
+                    }
+                    for tc in tool_calls
+                ],
+            }
+        )
 
-        # 将用户的新查询添加到历史记录
-        self.conversation_history.append({"role": "user", "content": query})
-
-        # 构建统一的工具列表
-        available_tools = await self._build_tool_list()
-
-        # 循环处理工具调用
-        forced_final_answer_attempted = False
+    async def _execute_agent_loop(self, messages: list, tools: list) -> str:
+        """通用 Agent 执行循环"""
         tool_cycle_count = 0
         while True:
-            # 先使用流式请求检查是否需要工具调用
+            # print(f"DEBUG: Sending messages to LLM: {json.dumps(messages, ensure_ascii=False, indent=2)}")
             response = self.client.chat.completions.create(
                 model=self.model,
-                messages=self.conversation_history,
+                messages=messages,
                 stream=True,
                 max_tokens=8192,
-                stop=None,
                 temperature=0.7,
-                top_p=0.7,
-                frequency_penalty=0.5,
-                n=1,
-                response_format={
-                    "type": "text"
-                },
-                tools=available_tools,
+                tools=tools if tools else None, # 如果没有工具，不传 tools 参数
             )
 
             final_content = ""
             has_tool_calls = False
-            # 标记是否是手动拦截的 JSON 调用
             is_intercepted_json = False
             tool_calls = []
-            
-            # 用于检测是否返回了纯 JSON 文本的缓冲区
             json_buffer = ""
 
             for chunk in response:
@@ -447,20 +366,16 @@ class MCPClient:
                     delta = chunk.choices[0].delta
                     try:
                         if delta.reasoning_content:
-                            # 逐字输出 Reasoning 内容
-                            reasoning_content = delta.reasoning_content
-                            print("\033[92m" + reasoning_content + "\033[0m", end="", flush=True)
+                            print("\033[92m" + delta.reasoning_content + "\033[0m", end="", flush=True)
                     except:
                         pass
                     if delta.content:
-                        # 逐字输出内容
                         content = delta.content
                         print(content, end="", flush=True)
                         final_content += content
                         json_buffer += content
                     if delta.tool_calls:
                         has_tool_calls = True
-                        # 新增参数合并逻辑
                         for tc in delta.tool_calls:
                             existing = next((x for x in tool_calls if x.index == tc.index), None)
                             if existing:
@@ -473,86 +388,182 @@ class MCPClient:
             if not has_tool_calls:
                 extracted = self._extract_text_tool_calls(json_buffer)
                 if extracted:
-                    logger.info(f"检测到 {len(extracted)} 个纯文本 JSON 工具调用，正在转换...")
+                    logger.info(f"检测到 {len(extracted)} 个纯文本 JSON 工具调用")
                     tool_calls = extracted
                     has_tool_calls = True
                     is_intercepted_json = True
-                    print(f"\n[系统] 已拦截并执行 {len(tool_calls)} 个工具调用...", end="", flush=True)
 
-            # 等待 delta的tool_calls的返回为空
             if has_tool_calls:
                 tool_cycle_count += 1
                 if tool_cycle_count > 10:
-                    logger.warning("检测到可能的死循环（工具链过长），强制停止工具链。")
-                    return "系统检测到循环调用，已停止执行。请尝试重新表述您的问题或分步骤提出需求。"
+                    return "系统检测到循环调用，已停止执行。"
 
-                # 如果有工具调用，组合tool_calss内容
-                # print(tool_calls) # 调试输出
                 tool_results = await self._process_tool_calls(tool_calls)
                 
-                # 检查是否所有的工具调用都是错误的，如果是，则不继续循环，避免死循环
+                # 统一转换 tool_calls 为 dict 格式
+                tool_calls_dicts = []
+                for tc in tool_calls:
+                    if isinstance(tc, dict):
+                        tool_calls_dicts.append(tc)
+                    else:
+                        tool_calls_dicts.append({
+                            "id": tc.id,
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments
+                        })
+                
+                self._append_assistant_tool_calls(tool_calls_dicts, history=messages)
+                messages.extend(tool_results)
+                
+                # Check for errors loop
                 all_errors = True
                 for result in tool_results:
                      if not result["content"].startswith("Error:"):
                          all_errors = False
                          break
                 
-                if is_intercepted_json:
-                    self._append_assistant_tool_calls(tool_calls)
-                
-                self.conversation_history.extend(tool_results)
-                
-                # 如果工具调用成功，清空 json_buffer 以便下一轮使用
-                # 并继续循环，让模型根据工具结果生成最终回答
-                if not all_errors:
-                    continue
-                else:
+                if all_errors:
                      return "工具调用失败，请检查参数或重试。"
-
+                continue
             else:
-                # 如果没有工具调用，直接返回流式内容
                 print()
-
-                forced = self._decide_forced_action(query, final_content, forced_final_answer_attempted)
-                if forced:
-                    action_type = forced["type"]
-                    if action_type == "tool":
-                        tool_call_id = str(uuid.uuid4())
-                        tool_name = forced["name"]
-                        tool_args = forced["arguments"]
-                        notice = forced.get("notice")
-
-                        self._append_assistant_tool_calls(
-                            [{"id": tool_call_id, "name": tool_name, "arguments": json.dumps(tool_args, ensure_ascii=False)}]
-                        )
-                        if notice:
-                            print(notice)
-                        tool_results = await self._process_tool_calls(
-                            [{"id": tool_call_id, "name": tool_name, "arguments": json.dumps(tool_args, ensure_ascii=False)}]
-                        )
-                        self.conversation_history.extend(tool_results)
-                        continue
-
-                    if action_type == "final_text":
-                        forced_final_answer_attempted = True
-                        advice = forced["content"]
-                        print(advice, end="", flush=True)
-                        print()
-                        self.conversation_history.append({"role": "assistant", "content": advice})
-                        return advice
-
-                    if action_type == "followup_prompt":
-                        forced_final_answer_attempted = True
-                        self.conversation_history.append({"role": "user", "content": forced["content"]})
-                        continue
-
+                messages.append({"role": "assistant", "content": final_content})
                 return final_content
 
-    async def _stream_response(self, content: str) -> str:
-        """流式输出文本内容"""
-        print(content, end="", flush=True)
-        print()  # 添加换行符
-        return content
+    async def _run_perception_phase(self, query: str):
+        print(f"\n📡 [Phase 1] 感知层启动...")
+        tools = [t for t in await self._build_tool_list() if t['function']['name'] in ['get_sensor_data', 'get_forecast_week']]
+        messages = [
+            {"role": "system", "content": PERCEPTION_PROMPT},
+            {"role": "user", "content": f"任务：获取当前环境状态。用户上下文：{query}"}
+        ]
+        return await self._execute_agent_loop(messages, tools)
+
+    async def _run_reasoning_phase(self, query: str, perception_data: str):
+        print(f"\n🧠 [Phase 2] 决策层启动...")
+        tools = [t for t in await self._build_tool_list() if t['function']['name'] in ['browser_use']]
+        messages = [
+            {"role": "system", "content": REASONING_PROMPT},
+            {"role": "user", "content": f"感知数据：\n{perception_data}\n\n用户请求：{query}"}
+        ]
+        return await self._execute_agent_loop(messages, tools)
+
+    async def _run_action_phase(self, decision_json: dict):
+        print(f"\n🚜 [Phase 3] 执行层启动...")
+        tools = [t for t in await self._build_tool_list() if t['function']['name'] in ['control_pump']]
+        messages = [
+            {"role": "system", "content": ACTION_PROMPT},
+            {"role": "user", "content": f"已确认决策：\n{json.dumps(decision_json, ensure_ascii=False)}\n\n用户已确认执行。请下发指令。"}
+        ]
+        return await self._execute_agent_loop(messages, tools)
+
+    async def process_query(self, query: str) -> str:
+        # 0. 状态检查：是否在等待确认
+        if self.pending_decision:
+            if query.lower() in ['y', 'yes', '是', '确认', 'ok', '好的']:
+                result = await self._run_action_phase(self.pending_decision)
+                self.pending_decision = None
+                return result
+            else:
+                self.pending_decision = None
+                return "❌ 用户已取消灌溉操作。"
+
+        # 1. 感知阶段
+        perception_output = await self._run_perception_phase(query)
+        # 简单验证输出是否看起来像 JSON
+        if not perception_output.strip().startswith("{"):
+             logger.warning(f"感知层输出格式可能不正确: {perception_output[:50]}...")
+
+        # 2. 决策阶段
+        reasoning_output = await self._run_reasoning_phase(query, perception_output)
+        
+        # 3. 解析决策并处理
+        try:
+            # 尝试找到 JSON 部分（支持 markdown 代码块）
+            json_str = reasoning_output
+            
+            # 移除 markdown 代码块标记
+            if "```json" in json_str:
+                json_str = json_str.split("```json")[1].split("```")[0].strip()
+            elif "```" in json_str:
+                json_str = json_str.split("```")[1].split("```")[0].strip()
+            
+            # 尝试提取 JSON
+            json_start = json_str.find("{")
+            json_end = json_str.rfind("}") + 1
+            
+            if json_start >= 0 and json_end > json_start:
+                json_content = json_str[json_start:json_end]
+                decision = json.loads(json_content)
+                
+                # 提取自然语言总结（JSON 之前的部分）
+                summary = reasoning_output[:reasoning_output.find("{")].strip()
+                if summary:
+                    print(f"\n{summary}\n")
+                
+                if decision.get("decision") == "IRRIGATE":
+                    self.pending_decision = decision
+                    
+                    weather_summary = decision.get('weather_summary', '未获取天气信息')
+                    
+                    # 构造确认请求
+                    confirm_msg = (
+                        f"\n{'='*60}\n"
+                        f"🌾 **智能灌溉决策报告**\n"
+                        f"{'='*60}\n\n"
+                        f"📊 **当前状态分析**\n"
+                        f"   💧 当前土壤湿度: {decision.get('comparison', {}).get('current_moisture', 'N/A')}\n"
+                        f"   🎯 理想湿度范围: {decision.get('comparison', {}).get('ideal_range', 'N/A')}\n"
+                        f"   🌤️  天气情况: {weather_summary}\n\n"
+                        f"💡 **决策建议**\n"
+                        f"   ✅ 建议执行灌溉\n"
+                        f"   💧 建议灌溉量: {decision.get('irrigation_mm', 0)} mm\n"
+                        f"   📈 决策置信度: {decision.get('confidence', 0)*100:.0f}%\n\n"
+                        f"📝 **决策依据**\n"
+                    )
+                    for i, reason in enumerate(decision.get('reasoning', []), 1):
+                        confirm_msg += f"   {i}. {reason}\n"
+                    
+                    if decision.get('risk_notes'):
+                        confirm_msg += f"\n⚠️  **风险提示**\n"
+                        for note in decision.get('risk_notes', []):
+                            confirm_msg += f"   • {note}\n"
+                    
+                    confirm_msg += (
+                        f"\n{'='*60}\n"
+                        f"❓ **是否立即执行灌溉？**\n"
+                        f"   输入 'y' 或 '是' 确认执行\n"
+                        f"   输入其他内容取消操作\n"
+                        f"{'='*60}\n"
+                    )
+                    return confirm_msg
+                else:
+                    result = (
+                        f"\n{'='*60}\n"
+                        f"🌾 **智能灌溉决策报告**\n"
+                        f"{'='*60}\n\n"
+                        f"📊 **当前状态分析**\n"
+                        f"   💧 当前土壤湿度: {decision.get('comparison', {}).get('current_moisture', 'N/A')}\n"
+                        f"   🎯 理想湿度范围: {decision.get('comparison', {}).get('ideal_range', 'N/A')}\n"
+                        f"   🌤️  天气情况: {decision.get('weather_summary', '未获取')}\n\n"
+                        f"💡 **决策建议**\n"
+                        f"   ✅ 无需灌溉\n"
+                        f"   📈 决策置信度: {decision.get('confidence', 0)*100:.0f}%\n\n"
+                        f"📝 **决策依据**\n"
+                    )
+                    for i, reason in enumerate(decision.get('reasoning', []), 1):
+                        result += f"   {i}. {reason}\n"
+                    result += f"\n{'='*60}\n"
+                    return result
+            else:
+                return f"⚠️ 决策层返回了非标准格式，请人工检查：\n{reasoning_output}"
+        except Exception as e:
+            import traceback
+            error_detail = traceback.format_exc()
+            return f"❌ 系统错误：无法解析决策结果\n错误: {str(e)}\n原始输出：{reasoning_output}\n\n调试信息:\n{error_detail}"
+
+
+
 
     async def _process_tool_calls(self, tool_calls) -> list:
         """处理工具调用（非流式，带超时控制）"""
@@ -586,25 +597,6 @@ class MCPClient:
             session = self.sessions[server_id]["session"]
             
             try:
-                # -----------------------------------------------------------
-                # 安全拦截逻辑：如果是控制水泵的工具，必须经过用户确认
-                # -----------------------------------------------------------
-                if tool_name == "control_pump":
-                    pump_action = "开启" if tool_args.get("turn_on") else "关闭"
-                    print(f"\n⚠️  【安全警告】AI 建议执行高风险操作：{pump_action}水泵")
-                    user_confirm = input("请确认是否执行？(输入 'y' 或 'yes' 确认，其他键取消): ").strip().lower()
-                    
-                    if user_confirm not in ['y', 'yes']:
-                        logger.info(f"🚫 用户拒绝了工具调用: {tool_name}")
-                        tool_results.append({
-                            "role": "tool",
-                            "content": f"User denied the execution of {tool_name}. The pump state remains unchanged.",
-                            "tool_call_id": tool_call_id,
-                        })
-                        continue
-                    else:
-                        print("✅ 用户已确认，正在执行...")
-
                 logger.info(f"🔧 调用工具 {tool_name} (服务: {server_id}, 参数: {tool_args})")
                 
                 # 添加工具调用超时控制
@@ -645,20 +637,6 @@ class MCPClient:
             return tool_call["id"], tool_call["name"], tool_call["arguments"]
         return tool_call.id, tool_call.function.name, tool_call.function.arguments
 
-    def _append_assistant_tool_calls(self, tool_calls: list[dict]):
-        self.conversation_history.append(
-            {
-                "role": "assistant",
-                "tool_calls": [
-                    {
-                        "id": tc["id"],
-                        "type": "function",
-                        "function": {"name": tc["name"], "arguments": tc["arguments"]},
-                    }
-                    for tc in tool_calls
-                ],
-            }
-        )
 
     def _extract_text_tool_calls(self, text: str) -> list[dict]:
         buf = (text or "").strip()
@@ -707,42 +685,6 @@ class MCPClient:
 
         return result
 
-    def _decide_forced_action(self, user_query: str, assistant_text: str, forced_final_answer_attempted: bool) -> dict | None:
-        if self._should_force_browser_search(user_query, assistant_text):
-            return {
-                "type": "tool",
-                "name": "browser_use",
-                "arguments": {
-                    "url": self._build_search_url(user_query),
-                    "action": f"搜索并用中文总结：{user_query}。优先给出清晰定义/要点，附上关键出处信息（网站/标题）。",
-                },
-                "notice": "[系统] 检测到模型未调用浏览器工具，已自动改用 browser_use 进行外部检索...",
-            }
-
-        if self._should_force_sensor_data(user_query, assistant_text):
-            return {
-                "type": "tool",
-                "name": "get_sensor_data",
-                "arguments": {},
-                "notice": "[系统] 已自动获取传感器数据（get_sensor_data）...",
-            }
-
-        return None
-
-    def _should_force_browser_search(self, user_query: str, assistant_text: str) -> bool:
-        if "browser_use" not in self.tools_map:
-            return False
-        q = (user_query or "").lower()
-        t = (assistant_text or "").lower()
-
-        want_search = any(k in q for k in ["查一下", "搜索", "检索", "查找", "定义", "是什么", "什么意思"])
-        refused = any(k in t for k in ["无法", "不能", "不可以"]) and any(
-            k in t for k in ["外部", "搜索引擎", "网络请求", "联网", "浏览器"]
-        )
-        return want_search and refused
-
-    def _build_search_url(self, query: str) -> str:
-        return f"https://www.bing.com/search?q={quote_plus(query)}"
 
     async def _is_sse_endpoint_alive(self, url: str) -> bool:
         parsed = urlparse(url)
@@ -780,33 +722,6 @@ class MCPClient:
             with suppress(Exception):
                 await writer.wait_closed()
 
-    def _should_force_sensor_data(self, user_query: str, assistant_text: str) -> bool:
-        q = user_query or ""
-        t = (assistant_text or "")
-
-        about_irrigation = any(k in q for k in ["灌溉", "浇水", "开泵", "需要水", "缺水"])
-        if not about_irrigation:
-            return False
-        if "get_sensor_data" not in self.tools_map:
-            return False
-        if self._has_sensor_snapshot_since_last_user():
-            return False
-
-        user_asked_sensor = any(k in q for k in ["传感器", "土壤", "土壤湿度", "水分", "结合"])
-        asking_sensor = any(k in t for k in ["土壤湿度", "传感器", "土壤水分"])
-        return user_asked_sensor or asking_sensor
-
-    def _has_sensor_snapshot_since_last_user(self) -> bool:
-        last_user_idx = None
-        for i in range(len(self.conversation_history) - 1, -1, -1):
-            if self.conversation_history[i].get("role") == "user":
-                last_user_idx = i
-                break
-        start = (last_user_idx + 1) if last_user_idx is not None else 0
-        for msg in self.conversation_history[start:]:
-            if msg.get("role") == "tool" and "土壤湿度" in (msg.get("content", "")):
-                return True
-        return False
 
     async def _maybe_wait_browser_use_result(self, session: ClientSession, result_content: str) -> str:
         try:
@@ -857,28 +772,7 @@ class MCPClient:
         except Exception:
             return result_content
 
-    async def _await_with_timeout(self, coro, timeout_seconds: int):
-        if timeout_seconds is None:
-            return await coro
-        if hasattr(asyncio, "timeout"):
-            async with asyncio.timeout(timeout_seconds):
-                return await coro
-        return await asyncio.wait_for(coro, timeout=timeout_seconds)
 
-    async def call_tool(self, server_id: str, tool_name: str, tool_args: dict):
-        """
-        调用指定服务端的工具
-        :param server_id: 服务端标识符
-        :param tool_name: 工具名称
-        :param tool_args: 工具参数
-        """
-        session_info = self.sessions.get(server_id)
-        if not session_info:
-            raise ValueError(f"服务端 {server_id} 未连接")
-        session = session_info["session"]
-        return await session.call_tool(tool_name, tool_args)
-
-    
     async def chat_loop(self):
         """运行交互式聊天循环"""
         print("\n" + "="*60)
