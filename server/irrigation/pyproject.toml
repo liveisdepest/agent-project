@@ -5,8 +5,8 @@ description = "MCP Irrigation Server with ESP8266 integration"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "mcp>=0.1.0",
-    "fastapi>=0.100.0",
+    "mcp>=1.6.0",
+    "fastapi>=0.115.12",
     "uvicorn>=0.20.0",
     "pydantic>=2.0.0"
 ]

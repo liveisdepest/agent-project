@@ -9,6 +9,16 @@ mcp = FastMCP("weather")
 WIS_API_BASE = "https://wis.qq.com"
 
 
+def format_time(time_str: str) -> str:
+    """格式化时间字符串 20250411140000 -> 2025-04-11 14:00:00"""
+    try:
+        if len(time_str) >= 14:
+            return f"{time_str[:4]}-{time_str[4:6]}-{time_str[6:8]} {time_str[8:10]}:{time_str[10:12]}:{time_str[12:14]}"
+        return time_str
+    except Exception:
+        return time_str
+
+
 async def make_nws_request(url: str) -> dict[str, Any] | None:
     """向腾讯天气API发送请求并返回响应数据."""
     headers = {
@@ -42,10 +52,10 @@ async def get_forecast_48h(province: str, city: str) -> str:
 
     forecasts = []
     for period in periods:
-        # periods['update_time']数据为20250411140000,需要格式化为2025-04-11 14:00:00
-        _time = periods[period]["update_time"][:4] + "-" + periods[period]["update_time"][4:6] + "-" + periods[period]["update_time"][6:8] + " " + periods[period]["update_time"][8:10] + ":" + periods[period]["update_time"][10:12] + ":" + periods[period]["update_time"][12:14]
+        # 使用新的时间格式化函数
+        formatted_time = format_time(periods[period]["update_time"])
         forecast = f"""
-时间：{_time}
+时间：{formatted_time}
 温度: {periods[period]['degree']}°
 天气: {periods[period]['weather']}
 风向: {periods[period]['wind_direction']}
@@ -63,32 +73,31 @@ async def get_alarms(province: str, city: str) -> str:
         province: 省份名称
         city: 城市名称
     """
-    # 首先获取指定地点的天气预警
     alarm_url = f"{WIS_API_BASE}/weather/common?source=pc&weather_type=alarm&province={province}&city={city}"
     alarm_data = await make_nws_request(alarm_url)
 
     if not alarm_data or "data" not in alarm_data or "alarm" not in alarm_data["data"]:
         return "无法获取此位置的天气预警。"
 
-    # 确保 alarm 是一个列表
     alarms = alarm_data["data"]["alarm"]
-    
-    # 如果 alerms 是列表，但是为空，则返回提示
     if isinstance(alarms, list) and len(alarms) == 0:
         return "该城市暂时没有天气预警。"
 
-    # 将JSON数据格式化为可读的预警
     alarm_list = []
     for alarm in alarms:
-        alarm_list.append(f"""
+        alarm_list.append(
+            f"""
 预警区域: {alarm["province"]}
 预警类型: {alarm["type_name"]}
 预警级别: {alarm["level_name"]}
 预警时间: {alarm["update_time"]}
 预警内容: {alarm["detail"]}
-""")
-        
+"""
+        )
+
     return "\n---\n".join(alarm_list)
+
+
 
 @mcp.tool()
 async def get_forecast_week(province: str, city: str) -> str:
@@ -141,9 +150,9 @@ async def get_observe(province: str, city: str) -> str:
 
     # 将JSON数据格式化为可读的预报
     observe = observe_data["data"]["observe"]
-    _update_time = observe["update_time"][:4] + "-" + observe["update_time"][4:6] + "-" + observe["update_time"][6:8] + " " + observe["update_time"][8:10] + ":" + observe["update_time"][10:12] + ":" + observe["update_time"][12:14]
+    formatted_time = format_time(observe["update_time"])
     return f"""
-时间: {_update_time}
+时间: {formatted_time}
 温度: {observe["degree"]}°
 湿度: {observe["humidity"]}%
 降水量: {observe["precipitation"]}mm
