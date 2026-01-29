@@ -57,8 +57,16 @@ class MCPClient:
         if not self.model:
             logger.warning("未找到 MODEL，将使用默认值或可能导致错误。请在 .env 文件中配置 MODEL")
 
-    async def load_servers_from_config(self, config_path: str):
-        """从配置文件加载服务器（支持失败跳过）"""
+    async def load_servers_from_config(self, config_filename: str):
+        """从配置文件加载服务器（支持失败跳过）
+        
+        Args:
+            config_filename: 配置文件名，将自动解析为相对于脚本的绝对路径
+        """
+        # 获取脚本所在目录的绝对路径
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        config_path = os.path.join(base_dir, config_filename)
+
         try:
             with open(config_path, 'r', encoding='utf-8') as f:
                 config = json.load(f)
@@ -126,12 +134,6 @@ class MCPClient:
         env = os.environ.copy()
         if env_config:
             env.update(env_config)
-
-        if server_id == "browser-use":
-            env.setdefault("OPENAI_API_KEY", os.environ.get("API_KEY", ""))
-            env.setdefault("OPENAI_BASE_URL", os.environ.get("BASE_URL", ""))
-            env.setdefault("OPENAI_MODEL", os.environ.get("MODEL", ""))
-
         return env
 
     async def _terminate_process(self, process: asyncio.subprocess.Process):
@@ -432,7 +434,18 @@ class MCPClient:
 
     async def _run_perception_phase(self, query: str):
         print(f"\n📡 [Phase 1] 感知层启动...")
-        tools = [t for t in await self._build_tool_list() if t['function']['name'] in ['get_sensor_data', 'get_forecast_week']]
+        # 工具名称可能带或不带前缀，根据实际加载情况匹配
+        # 这里我们放宽匹配条件，只要包含 'get_irrigation_status' 或 'get_forecast_week' 即可
+        target_tools = ['get_irrigation_status', 'get_forecast_week']
+        tools = []
+        
+        all_tools = await self._build_tool_list()
+        for t in all_tools:
+            name = t['function']['name']
+            # 检查名称是否完全匹配或作为后缀匹配（例如 weather.get_forecast_week）
+            if any(name == target or name.endswith(f".{target}") for target in target_tools):
+                tools.append(t)
+                
         messages = [
             {"role": "system", "content": PERCEPTION_PROMPT},
             {"role": "user", "content": f"任务：获取当前环境状态。用户上下文：{query}"}
@@ -441,7 +454,16 @@ class MCPClient:
 
     async def _run_reasoning_phase(self, query: str, perception_data: str):
         print(f"\n🧠 [Phase 2] 决策层启动...")
-        tools = [t for t in await self._build_tool_list() if t['function']['name'] in ['browser_use']]
+        # 启用 search 工具
+        target_tools = ['search']
+        tools = []
+        
+        all_tools = await self._build_tool_list()
+        for t in all_tools:
+            name = t['function']['name']
+            if any(name == target or name.endswith(f".{target}") for target in target_tools):
+                tools.append(t)
+
         messages = [
             {"role": "system", "content": REASONING_PROMPT},
             {"role": "user", "content": f"感知数据：\n{perception_data}\n\n用户请求：{query}"}
@@ -450,12 +472,42 @@ class MCPClient:
 
     async def _run_action_phase(self, decision_json: dict):
         print(f"\n🚜 [Phase 3] 执行层启动...")
-        tools = [t for t in await self._build_tool_list() if t['function']['name'] in ['control_pump']]
+        tools = [t for t in await self._build_tool_list() if t['function']['name'] in ['start_irrigation']]
         messages = [
             {"role": "system", "content": ACTION_PROMPT},
             {"role": "user", "content": f"已确认决策：\n{json.dumps(decision_json, ensure_ascii=False)}\n\n用户已确认执行。请下发指令。"}
         ]
         return await self._execute_agent_loop(messages, tools)
+
+    def _extract_json_from_response(self, text: str) -> dict | None:
+        """从响应文本中提取 JSON 对象"""
+        text = text.strip()
+        
+        # 1. 尝试提取 markdown 代码块（处理多个块的情况）
+        code_blocks = re.findall(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
+        for block in code_blocks:
+            try:
+                # 尝试解析每个代码块，看是否包含决策结构
+                data = json.loads(block.strip())
+                if isinstance(data, dict) and ("decision" in data or "decision_reasoning" in data):
+                    return data
+            except json.JSONDecodeError:
+                continue
+
+        # 2. 尝试直接解析
+        with suppress(json.JSONDecodeError):
+            return json.loads(text)
+
+        # 3. 尝试查找最外层的 {}
+        try:
+            start = text.find("{")
+            end = text.rfind("}") + 1
+            if start >= 0 and end > start:
+                return json.loads(text[start:end])
+        except json.JSONDecodeError:
+            pass
+            
+        return None
 
     async def process_query(self, query: str) -> str:
         # 0. 状态检查：是否在等待确认
@@ -479,32 +531,19 @@ class MCPClient:
         
         # 3. 解析决策并处理
         try:
-            # 尝试找到 JSON 部分（支持 markdown 代码块）
-            json_str = reasoning_output
+            decision_json = self._extract_json_from_response(reasoning_output)
             
-            # 移除 markdown 代码块标记
-            if "```json" in json_str:
-                json_str = json_str.split("```json")[1].split("```")[0].strip()
-            elif "```" in json_str:
-                json_str = json_str.split("```")[1].split("```")[0].strip()
-            
-            # 尝试提取 JSON
-            json_start = json_str.find("{")
-            json_end = json_str.rfind("}") + 1
-            
-            if json_start >= 0 and json_end > json_start:
-                json_content = json_str[json_start:json_end]
-                decision = json.loads(json_content)
-                
+            if decision_json:
                 # 提取自然语言总结（JSON 之前的部分）
                 summary = reasoning_output[:reasoning_output.find("{")].strip()
                 if summary:
                     print(f"\n{summary}\n")
                 
-                if decision.get("decision") == "IRRIGATE":
-                    self.pending_decision = decision
-                    
-                    weather_summary = decision.get('weather_summary', '未获取天气信息')
+                decision_core = decision_json.get("decision", {})
+                reasoning_core = decision_json.get("decision_reasoning", {})
+
+                if decision_core.get("irrigate") is True:
+                    self.pending_decision = decision_core
                     
                     # 构造确认请求
                     confirm_msg = (
@@ -512,24 +551,17 @@ class MCPClient:
                         f"🌾 **智能灌溉决策报告**\n"
                         f"{'='*60}\n\n"
                         f"📊 **当前状态分析**\n"
-                        f"   💧 当前土壤湿度: {decision.get('comparison', {}).get('current_moisture', 'N/A')}\n"
-                        f"   🎯 理想湿度范围: {decision.get('comparison', {}).get('ideal_range', 'N/A')}\n"
-                        f"   🌤️  天气情况: {weather_summary}\n\n"
+                        f"   💧 水分胁迫评估: {reasoning_core.get('water_stress_assessment', 'N/A')}\n"
+                        f"   🌤️  气象影响分析: {reasoning_core.get('weather_impact_analysis', 'N/A')}\n"
+                        f"   🌱 作物需水分析: {reasoning_core.get('crop_demand_analysis', 'N/A')}\n\n"
                         f"💡 **决策建议**\n"
                         f"   ✅ 建议执行灌溉\n"
-                        f"   💧 建议灌溉量: {decision.get('irrigation_mm', 0)} mm\n"
-                        f"   📈 决策置信度: {decision.get('confidence', 0)*100:.0f}%\n\n"
-                        f"📝 **决策依据**\n"
-                    )
-                    for i, reason in enumerate(decision.get('reasoning', []), 1):
-                        confirm_msg += f"   {i}. {reason}\n"
-                    
-                    if decision.get('risk_notes'):
-                        confirm_msg += f"\n⚠️  **风险提示**\n"
-                        for note in decision.get('risk_notes', []):
-                            confirm_msg += f"   • {note}\n"
-                    
-                    confirm_msg += (
+                        f"   💧 建议灌溉量: {decision_core.get('irrigation_amount_mm', 0)} mm\n"
+                        f"   ⏱️ 建议时长: {decision_core.get('irrigation_duration_min', 0)} 分钟\n"
+                        f"   🕒 执行时机: {decision_core.get('irrigation_time_window', '立即')}\n"
+                        f"   📈 决策置信度: {decision_json.get('confidence_score', 0)*100:.0f}%\n\n"
+                        f"📝 **节水策略**\n"
+                        f"   {reasoning_core.get('water_saving_strategy', 'N/A')}\n"
                         f"\n{'='*60}\n"
                         f"❓ **是否立即执行灌溉？**\n"
                         f"   输入 'y' 或 '是' 确认执行\n"
@@ -543,17 +575,15 @@ class MCPClient:
                         f"🌾 **智能灌溉决策报告**\n"
                         f"{'='*60}\n\n"
                         f"📊 **当前状态分析**\n"
-                        f"   💧 当前土壤湿度: {decision.get('comparison', {}).get('current_moisture', 'N/A')}\n"
-                        f"   🎯 理想湿度范围: {decision.get('comparison', {}).get('ideal_range', 'N/A')}\n"
-                        f"   🌤️  天气情况: {decision.get('weather_summary', '未获取')}\n\n"
+                        f"   💧 水分胁迫评估: {reasoning_core.get('water_stress_assessment', 'N/A')}\n"
+                        f"   🌤️  气象影响分析: {reasoning_core.get('weather_impact_analysis', 'N/A')}\n\n"
                         f"💡 **决策建议**\n"
                         f"   ✅ 无需灌溉\n"
-                        f"   📈 决策置信度: {decision.get('confidence', 0)*100:.0f}%\n\n"
+                        f"   📈 决策置信度: {decision_json.get('confidence_score', 0)*100:.0f}%\n\n"
                         f"📝 **决策依据**\n"
+                        f"   {reasoning_core.get('water_saving_strategy', 'N/A')}\n"
+                        f"\n{'='*60}\n"
                     )
-                    for i, reason in enumerate(decision.get('reasoning', []), 1):
-                        result += f"   {i}. {reason}\n"
-                    result += f"\n{'='*60}\n"
                     return result
             else:
                 return f"⚠️ 决策层返回了非标准格式，请人工检查：\n{reasoning_output}"
@@ -603,8 +633,9 @@ class MCPClient:
                 result = await asyncio.wait_for(session.call_tool(tool_name, tool_args), timeout=self.tool_timeout)
                 
                 result_content = result.content[0].text
-                if tool_name == "browser_use":
-                    result_content = await self._maybe_wait_browser_use_result(session, result_content)
+                if tool_name == "browser-use":
+                    # result_content = await self._maybe_wait_browser_use_result(session, result_content)
+                    pass
                 logger.info(f"✅ 工具 {tool_name} 执行成功")
 
                 tool_results.append({

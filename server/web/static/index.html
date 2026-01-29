@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FarmMind 智能农业监控中心</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/vue@2.6.14/dist/vue.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+    <style>
+        .chat-container {
+            height: 400px;
+            overflow-y: auto;
+        }
+        .message-bubble {
+            max-width: 80%;
+            border-radius: 12px;
+            padding: 10px 15px;
+            margin-bottom: 10px;
+            white-space: pre-wrap;
+        }
+        .message-user {
+            background-color: #e0f2fe;
+            margin-left: auto;
+            color: #0c4a6e;
+        }
+        .message-ai {
+            background-color: #f3f4f6;
+            margin-right: auto;
+            color: #1f2937;
+        }
+        /* Markdown 样式模拟 */
+        .message-ai h1, .message-ai h2, .message-ai h3 {
+            font-weight: bold;
+            margin-top: 0.5em;
+            margin-bottom: 0.3em;
+        }
+        .message-ai ul {
+            list-style-type: disc;
+            padding-left: 1.5em;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen font-sans">
+    <div id="app" class="container mx-auto px-4 py-8">
+        <!-- 顶部标题 -->
+        <header class="mb-8 flex justify-between items-center">
+            <div>
+                <h1 class="text-3xl font-bold text-gray-800">🌾 FarmMind 智能农业监控</h1>
+                <p class="text-gray-600 mt-1">基于 MCP 架构的自主灌溉决策系统</p>
+            </div>
+            <div class="flex items-center space-x-2">
+                <div :class="['w-3 h-3 rounded-full', wsConnected ? 'bg-green-500' : 'bg-red-500']"></div>
+                <span class="text-sm text-gray-500">{{ wsConnected ? '实时连接中' : '连接断开' }}</span>
+            </div>
+        </header>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            <!-- 左侧：实时数据监控 -->
+            <div class="lg:col-span-1 space-y-6">
+                <!-- 传感器卡片 -->
+                <div class="bg-white rounded-xl shadow-md p-6">
+                    <h2 class="text-xl font-semibold mb-4 text-gray-700 flex items-center">
+                        <span class="text-2xl mr-2">📊</span> 环境监测
+                    </h2>
+                    <div class="space-y-4">
+                        <div class="flex justify-between items-center p-3 bg-blue-50 rounded-lg">
+                            <span class="text-gray-600">🌡️ 空气温度</span>
+                            <span class="text-2xl font-bold text-blue-600">{{ sensor.temperature }}°C</span>
+                        </div>
+                        <div class="flex justify-between items-center p-3 bg-indigo-50 rounded-lg">
+                            <span class="text-gray-600">💧 空气湿度</span>
+                            <span class="text-2xl font-bold text-indigo-600">{{ sensor.humidity }}%</span>
+                        </div>
+                        <div class="flex justify-between items-center p-3 bg-green-50 rounded-lg">
+                            <span class="text-gray-600">🌱 土壤湿度</span>
+                            <span class="text-2xl font-bold text-green-600">{{ sensor.soil_moisture }}%</span>
+                        </div>
+                    </div>
+                    <div class="mt-4 text-xs text-gray-400 text-right">
+                        更新时间: {{ sensor.last_update || '暂无数据' }}
+                    </div>
+                </div>
+
+                <!-- 设备状态卡片 -->
+                <div class="bg-white rounded-xl shadow-md p-6">
+                    <h2 class="text-xl font-semibold mb-4 text-gray-700 flex items-center">
+                        <span class="text-2xl mr-2">🚜</span> 设备控制
+                    </h2>
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center">
+                            <div :class="['w-12 h-12 rounded-full flex items-center justify-center text-2xl mr-4', sensor.pump_status ? 'bg-blue-100 text-blue-600 animate-pulse' : 'bg-gray-100 text-gray-400']">
+                                🚿
+                            </div>
+                            <div>
+                                <div class="font-medium text-lg">灌溉水泵</div>
+                                <div :class="['text-sm', sensor.pump_status ? 'text-blue-500 font-bold' : 'text-gray-500']">
+                                    {{ sensor.pump_status ? '运行中' : '已停止' }}
+                                </div>
+                            </div>
+                        </div>
+                        <!-- 手动开关（可选，目前主要靠AI决策） -->
+                        <!-- 
+                        <button @click="togglePump" class="px-4 py-2 bg-gray-200 rounded-lg text-sm hover:bg-gray-300 transition">
+                            手动切换
+                        </button> 
+                        -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- 右侧：AI 决策交互 -->
+            <div class="lg:col-span-2">
+                <div class="bg-white rounded-xl shadow-md h-full flex flex-col">
+                    <div class="p-6 border-b border-gray-100">
+                        <h2 class="text-xl font-semibold text-gray-700 flex items-center">
+                            <span class="text-2xl mr-2">🤖</span> 智能决策助手
+                        </h2>
+                        <p class="text-sm text-gray-500 mt-1">基于实时数据和气象预测，为您提供灌溉建议</p>
+                    </div>
+
+                    <!-- 聊天记录区域 -->
+                    <div class="flex-1 p-6 chat-container bg-gray-50" ref="chatContainer">
+                        <div v-if="messages.length === 0" class="text-center text-gray-400 mt-20">
+                            <p>👋 您好！我是您的智能灌溉助手。</p>
+                            <p class="mt-2 text-sm">您可以问我：</p>
+                            <div class="mt-4 space-y-2">
+                                <button @click="sendQuery('现在的环境情况怎么样，需要浇水吗？')" class="px-3 py-1 bg-white border border-gray-300 rounded-full text-xs hover:bg-blue-50 hover:border-blue-300 transition">
+                                    "现在的环境情况怎么样？"
+                                </button>
+                                <button @click="sendQuery('小麦最近缺水吗？')" class="px-3 py-1 bg-white border border-gray-300 rounded-full text-xs hover:bg-blue-50 hover:border-blue-300 transition">
+                                    "小麦最近缺水吗？"
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <div v-for="(msg, index) in messages" :key="index" :class="['message-bubble', msg.role === 'user' ? 'message-user' : 'message-ai']">
+                            <div v-if="msg.role === 'user'">{{ msg.content }}</div>
+                            <div v-else v-html="formatMarkdown(msg.content)"></div>
+                        </div>
+                        
+                        <div v-if="isThinking" class="message-bubble message-ai flex items-center space-x-2">
+                            <div class="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
+                            <div class="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style="animation-delay: 0.1s"></div>
+                            <div class="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style="animation-delay: 0.2s"></div>
+                            <span class="text-xs text-gray-500 ml-2">正在思考并调用工具...</span>
+                        </div>
+                    </div>
+
+                    <!-- 输入区域 -->
+                    <div class="p-4 border-t border-gray-100">
+                        <div class="flex space-x-2">
+                            <input 
+                                v-model="userInput" 
+                                @keyup.enter="sendMessage"
+                                type="text" 
+                                placeholder="输入您的问题..." 
+                                class="flex-1 px-4 py-3 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                :disabled="isThinking"
+                            >
+                            <button 
+                                @click="sendMessage" 
+                                :disabled="isThinking || !userInput.trim()"
+                                class="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed font-medium"
+                            >
+                                发送
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        new Vue({
+            el: '#app',
+            data: {
+                ws: null,
+                wsConnected: false,
+                sensor: {
+                    temperature: 0,
+                    humidity: 0,
+                    soil_moisture: 0,
+                    pump_status: false,
+                    last_update: ''
+                },
+                messages: [],
+                userInput: '',
+                isThinking: false
+            },
+            mounted() {
+                this.connectWebSocket();
+            },
+            methods: {
+                connectWebSocket() {
+                    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                    const wsUrl = `${protocol}//${window.location.host}/ws`;
+                    
+                    this.ws = new WebSocket(wsUrl);
+
+                    this.ws.onopen = () => {
+                        this.wsConnected = true;
+                        console.log('WebSocket connected');
+                    };
+
+                    this.ws.onmessage = (event) => {
+                        const data = JSON.parse(event.data);
+                        this.handleWsMessage(data);
+                    };
+
+                    this.ws.onclose = () => {
+                        this.wsConnected = false;
+                        console.log('WebSocket disconnected, retrying in 3s...');
+                        setTimeout(this.connectWebSocket, 3000);
+                    };
+                },
+                handleWsMessage(msg) {
+                    if (msg.type === 'sensor_update') {
+                        this.sensor = { ...this.sensor, ...msg.data };
+                    } else if (msg.type === 'query_response') {
+                        // 只有当这是当前用户发起的查询响应时才处理（这里简单处理，实际可加ID）
+                        this.isThinking = false;
+                        this.messages.push({
+                            role: 'ai',
+                            content: msg.response
+                        });
+                        this.$nextTick(() => this.scrollToBottom());
+                    } else if (msg.type === 'error') {
+                        this.isThinking = false;
+                        this.messages.push({
+                            role: 'ai',
+                            content: `❌ 错误: ${msg.message}`
+                        });
+                    }
+                },
+                sendMessage() {
+                    const text = this.userInput.trim();
+                    if (!text) return;
+
+                    this.messages.push({ role: 'user', content: text });
+                    this.userInput = '';
+                    this.isThinking = true;
+                    this.$nextTick(() => this.scrollToBottom());
+
+                    // 通过 WebSocket 发送查询
+                    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                        this.ws.send(JSON.stringify({
+                            type: 'query',
+                            query: text
+                        }));
+                    } else {
+                        // 降级使用 HTTP
+                        fetch('/api/query', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({ query: text })
+                        }).catch(err => {
+                            this.isThinking = false;
+                            this.messages.push({ role: 'ai', content: `❌ 发送失败: ${err}` });
+                        });
+                    }
+                },
+                sendQuery(text) {
+                    this.userInput = text;
+                    this.sendMessage();
+                },
+                scrollToBottom() {
+                    const container = this.$refs.chatContainer;
+                    container.scrollTop = container.scrollHeight;
+                },
+                formatMarkdown(text) {
+                    // 简单的 Markdown 格式化，实际生产建议使用 marked.js
+                    if (!text) return '';
+                    let html = text
+                        .replace(/\n/g, '<br>')
+                        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                        .replace(/### (.*?)(<br>|$)/g, '<h3 class="text-lg font-bold text-gray-700">$1</h3>')
+                        .replace(/## (.*?)(<br>|$)/g, '<h2 class="text-xl font-bold text-gray-800">$1</h2>')
+                        .replace(/- (.*?)(<br>|$)/g, '<li class="ml-4">$1</li>');
+                    return html;
+                }
+            }
+        });
+    </script>
+</body>
+</html>

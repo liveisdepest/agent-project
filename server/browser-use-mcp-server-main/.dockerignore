@@ -1,7 +1,0 @@
-.venv
-Dockerfile
-.github
-**/__pycache__
-**/*.pyc
-*.egg-info
-dist

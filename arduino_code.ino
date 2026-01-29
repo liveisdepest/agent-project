@@ -8,7 +8,7 @@ const char* ssid = "CMCC-dNqR";           // WiFi名称
 const char* password = "cf25f9cy";      // WiFi密码 
   
 // 服务器配置 - 请替换为您电脑的实际局域网IP 
-const char* serverURL = "http://192.168.1.5:8000"; 
+const char* serverURL = "http://192.168.1.9:8080"; 
 const char* deviceID = "ESP8266_001";
 
 // 硬件引脚定义 (NodeMCU)

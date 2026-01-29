@@ -1,8 +1,0 @@
-{
-    "reportMissingImports": false,
-    "reportMissingModuleSource": false,
-    "reportOptionalMemberAccess": false,
-    "reportAttributeAccessIssue": false,
-    "reportCallIssue": false,
-    "reportFunctionMemberAccess": false
-}
