@@ -435,8 +435,7 @@ class MCPClient:
     async def _run_perception_phase(self, query: str):
         print(f"\n📡 [Phase 1] 感知层启动...")
         # 工具名称可能带或不带前缀，根据实际加载情况匹配
-        # 这里我们放宽匹配条件，只要包含 'get_irrigation_status' 或 'get_forecast_week' 即可
-        target_tools = ['get_irrigation_status', 'get_forecast_week']
+        target_tools = ['get_irrigation_status', 'get_forecast_week', 'get_sensor_data', 'get_crop_info', 'list_devices']
         tools = []
         
         all_tools = await self._build_tool_list()
@@ -454,8 +453,8 @@ class MCPClient:
 
     async def _run_reasoning_phase(self, query: str, perception_data: str):
         print(f"\n🧠 [Phase 2] 决策层启动...")
-        # 启用 search 工具
-        target_tools = ['search']
+        # 启用 search 工具 和 决策工具
+        target_tools = ['search', 'make_irrigation_decision']
         tools = []
         
         all_tools = await self._build_tool_list()
@@ -525,6 +524,10 @@ class MCPClient:
         # 简单验证输出是否看起来像 JSON
         if not perception_output.strip().startswith("{"):
              logger.warning(f"感知层输出格式可能不正确: {perception_output[:50]}...")
+        
+        # 修复 Perception 数据中包含 Markdown 代码块的问题
+        if "```json" in perception_output:
+            perception_output = perception_output.replace("```json", "").replace("```", "").strip()
 
         # 2. 决策阶段
         reasoning_output = await self._run_reasoning_phase(query, perception_output)
@@ -535,9 +538,11 @@ class MCPClient:
             
             if decision_json:
                 # 提取自然语言总结（JSON 之前的部分）
-                summary = reasoning_output[:reasoning_output.find("{")].strip()
-                if summary:
-                    print(f"\n{summary}\n")
+                # summary = reasoning_output[:reasoning_output.find("{")].strip()
+                # # 清理可能存在的 markdown 代码块标记
+                # summary = summary.replace("```json", "").replace("```", "").strip()
+                # if summary:
+                #     print(f"\n{summary}\n")
                 
                 decision_core = decision_json.get("decision", {})
                 reasoning_core = decision_json.get("decision_reasoning", {})
@@ -613,6 +618,16 @@ class MCPClient:
                 continue
 
             tool_info = self.tools_map.get(tool_name)
+            
+            # 尝试处理带有前缀的工具名 (e.g. "sensor.get_sensor_data" -> "get_sensor_data")
+            if not tool_info and "." in tool_name:
+                short_name = tool_name.split(".")[-1]
+                # logger.info(f"⚠️ 工具 {tool_name} 未找到，尝试使用短名称 {short_name}...")
+                tool_info = self.tools_map.get(short_name)
+                # 如果找到了，更新 tool_name 以便后续调用使用正确名称
+                if tool_info:
+                    tool_name = short_name
+
             if not tool_info:
                 error_message = f"错误：未找到工具 {tool_name} 的配置信息。"
                 logger.error(error_message)

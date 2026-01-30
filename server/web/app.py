@@ -153,12 +153,41 @@ global_state = {
     }
 }
 
-# ==================== REST API 端点 ====================
+# 传感器数据文件路径 (用于与 Sensor MCP 共享数据)
+SENSOR_DATA_FILE = os.path.join(os.path.dirname(__file__), "..", "sensor", "sensor_data.json")
 
-@app.get("/api/sensor/latest")
-async def get_latest_sensor_data():
-    """获取最新的传感器数据（供 MCP Server 调用）"""
-    return global_state["sensor_data"]
+def save_sensor_data_to_file(data: dict):
+    """将传感器数据写入共享文件，供 Sensor MCP 读取"""
+    try:
+        # 确保目录存在
+        os.makedirs(os.path.dirname(SENSOR_DATA_FILE), exist_ok=True)
+        
+        # 读取现有数据
+        existing_data = {}
+        if os.path.exists(SENSOR_DATA_FILE):
+            try:
+                with open(SENSOR_DATA_FILE, "r", encoding="utf-8") as f:
+                    existing_data = json.load(f)
+            except:
+                pass
+        
+        # 更新默认设备数据 (假设设备ID为 ESP8266_001)
+        device_id = "ESP8266_001"
+        existing_data[device_id] = {
+            "temperature": data.get("temperature", 0),
+            "humidity": data.get("humidity", 0),
+            "soil_moisture": data.get("soil_moisture", 0),
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        # 写入文件
+        with open(SENSOR_DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(existing_data, f, indent=2, ensure_ascii=False)
+            
+    except Exception as e:
+        print(f"⚠️  写入传感器数据文件失败: {e}")
+
+# ==================== REST API 端点 ====================
 
 @app.post("/api/command/update")
 async def update_command(cmd: dict):
@@ -276,6 +305,9 @@ async def upload_sensor_data(data: dict):
             "soil_moisture": data.get("soil_moisture", 0),
             "last_update": datetime.now().isoformat()
         })
+        
+        # 同步写入到 Sensor MCP 的数据文件
+        save_sensor_data_to_file(global_state["sensor_data"])
         
         # 广播给 WebSocket 前端展示
         await manager.broadcast({

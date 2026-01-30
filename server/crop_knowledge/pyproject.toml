@@ -1,0 +1,9 @@
+[project]
+name = "crop_knowledge"
+version = "0.1.0"
+description = "Crop Knowledge MCP"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp[cli]>=1.2.0",
+]

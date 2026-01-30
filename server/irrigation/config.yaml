@@ -1,4 +1,4 @@
 api_url: "http://127.0.0.1:8080/api"
 default_duration_minutes: 10
 pump_control_endpoint: "/command/update"
-sensor_data_endpoint: "/sensor/latest"
+sensor_data_endpoint: "/sensor/current"

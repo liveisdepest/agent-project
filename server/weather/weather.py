@@ -107,6 +107,9 @@ async def get_forecast_week(province: str, city: str) -> str:
         province: 省份名称
         city: 城市名称
     """
+    
+    # Debug: 打印请求参数
+    # print(f"DEBUG: Requesting weather for {province}, {city}")
 
     # 首先获取指定地点的天气预报
     forecast_url = f"{WIS_API_BASE}/weather/common?source=pc&weather_type=forecast_24h&province={province}&city={city}"
@@ -114,21 +117,32 @@ async def get_forecast_week(province: str, city: str) -> str:
 
     if not forecast_data:
         return "无法获取此位置的未来一周的天气预报。"
+        
+    # 检查返回数据结构
+    if "data" not in forecast_data or "forecast_24h" not in forecast_data["data"]:
+        # 尝试打印错误信息，或者返回更具体的错误
+        return f"API返回数据异常: {str(forecast_data)}"
 
     # 将JSON数据格式化为可读的预报
     periods = forecast_data["data"]["forecast_24h"]
 
     forecasts = []
-    for period in periods:
+    # periods 是一个字典，键是索引 '0', '1', ...
+    for i in range(len(periods)):
+        period = str(i) # 腾讯API返回的键是字符串数字
+        if period not in periods:
+            continue
+            
+        data_point = periods[period]
         forecast = f"""
-日期: {periods[period]["time"]}
-温度: {periods[period]["min_degree"]}° ~ {periods[period]["max_degree"]}°
-白天天气: {periods[period]["day_weather"]}
-白天风向: {periods[period]["day_wind_direction"]}
-白天风速: {periods[period]["day_wind_power"]}
-夜间天气: {periods[period]["night_weather"]}
-夜间风向: {periods[period]["night_wind_direction"]}
-夜间风速: {periods[period]["night_wind_power"]}
+日期: {data_point["time"]}
+温度: {data_point["min_degree"]}° ~ {data_point["max_degree"]}°
+白天天气: {data_point["day_weather"]}
+白天风向: {data_point["day_wind_direction"]}
+白天风速: {data_point["day_wind_power"]}
+夜间天气: {data_point["night_weather"]}
+夜间风向: {data_point["night_wind_direction"]}
+夜间风速: {data_point["night_wind_power"]}
 """
         forecasts.append(forecast)
     return "\n---\n".join(forecasts)

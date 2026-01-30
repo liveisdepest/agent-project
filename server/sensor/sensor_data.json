@@ -1,0 +1,8 @@
+{
+  "ESP8266_001": {
+    "temperature": 15.6,
+    "humidity": 41.7,
+    "soil_moisture": 42,
+    "timestamp": "2026-01-30T00:09:31.470524"
+  }
+}
