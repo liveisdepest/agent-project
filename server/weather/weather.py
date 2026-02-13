@@ -23,7 +23,7 @@ def get_api_key() -> str:
     if not api_key:
         # Fallback for local development if not set in env
         # In production, this should be strictly env var
-        return "137d6f6f171fc0f2f19011d3134a1501"
+        return "你的open weathermap_api_key"
     return api_key
 
 async def make_owm_request(endpoint: str, params: Dict[str, Any]) -> Dict[str, Any] | None:
