@@ -5,11 +5,14 @@
 
 ## ✨ 核心特性
 
-### 🔗 四大功能模块深度关联
-1. **环境监测** - 实时获取温度、湿度、土壤湿度数据
-2. **天气服务** - 查询实时天气、预报、预警信息  
-3. **作物知识** - 网络搜索作物生长习性和管理要求
-4. **智能控制** - 基于综合分析的自动化灌溉控制
+### 🔗 核心功能模块
+1. **环境监测（sensor）** - 实时获取温度、湿度、土壤湿度数据
+2. **天气服务（weather）** - 查询实时天气、预报、预警信息
+3. **作物知识（crop_knowledge + search）** - 作物生育期与生长习性知识检索
+4. **决策推理（decision）** - 基于感知数据生成灌溉决策
+5. **灌溉执行（irrigation）** - 执行水泵/阀门控制指令
+6. **文件系统（filesystem）** - 日志与结果存储
+7. **Web 接口（web）** - 提供 HTTP / WebSocket 接入
 
 ### 🧠 智能决策流程
 ```
@@ -53,26 +56,22 @@ AI助手自动执行：
 │       ├── .env.example
 │       ├── .python-version
 │       ├── README.md
-│       ├── __pycache__/
 │       ├── client.py
-│       ├── mcp_servers.json.example
+│       ├── mcp_servers.json
+│       ├── prompts.py
 │       ├── pyproject.toml
 │       └── uv.lock
 ├── package-lock.json
 ├── package.json
 └── server/
+    ├── crop_knowledge/
+    ├── decision/
     ├── filesystem/
-    │   ├── .python-version
-    │   ├── README.md
-    │   ├── filesystem.py
-    │   ├── pyproject.toml
-    │   └── uv.lock
-    └── weather/
-        ├── .python-version
-        ├── README.md
-        ├── pyproject.toml
-        ├── uv.lock
-        └── weather.py
+    ├── irrigation/
+    ├── search/
+    ├── sensor/
+    ├── weather/
+    └── web/
 ```
 
 ## 🚀 快速开始
@@ -150,20 +149,10 @@ API_KEY=your_api_key # 模型密钥，Ollama没有密钥则留空
 完成编辑后，重命名为`.env`。
 
 ### 5. 配置MCP服务
-编辑`client\mcp-client\mcp_servers.json.example`示例配置文件：
+编辑`client\mcp-client\mcp_servers.json`配置文件：
 ```
 {
     "mcpServers": {
-    	"amap-maps": {
-            "command": "npx",
-            "args": [
-                "-y",
-                "@amap/amap-maps-mcp-server"
-            ],
-            "env": {
-                "AMAP_MAPS_API_KEY": "你的key"
-            }
-        },
         "weather": {
             "command": "uv",
             "args": [
@@ -171,6 +160,42 @@ API_KEY=your_api_key # 模型密钥，Ollama没有密钥则留空
                 "..\\..\\server\\weather",
                 "run",
                 "weather.py"
+            ]
+        },
+        "sensor": {
+            "command": "uv",
+            "args": [
+                "--directory",
+                "..\\..\\server\\sensor",
+                "run",
+                "sensor.py"
+            ]
+        },
+        "crop_knowledge": {
+            "command": "uv",
+            "args": [
+                "--directory",
+                "..\\..\\server\\crop_knowledge",
+                "run",
+                "knowledge.py"
+            ]
+        },
+        "decision": {
+            "command": "uv",
+            "args": [
+                "--directory",
+                "..\\..\\server\\decision",
+                "run",
+                "decision.py"
+            ]
+        },
+        "irrigation": {
+            "command": "uv",
+            "args": [
+                "--directory",
+                "..\\..\\server\\irrigation",
+                "run",
+                "main.py"
             ]
         },
         "filesystem": {
@@ -181,11 +206,20 @@ API_KEY=your_api_key # 模型密钥，Ollama没有密钥则留空
                 "run",
                 "filesystem.py"
             ]
+        },
+        "search": {
+            "command": "uv",
+            "args": [
+                "--directory",
+                "..\\..\\server\\search",
+                "run",
+                "src/duckduckgo_mcp_server/server.py"
+            ]
         }
     }
 }
 ```
-配置好后，重命名为`mcp_servers.json`。
+如需接入第三方地图/其他工具，可在此处新增服务配置。
 
 ### 6. 安装依赖
 进入客户端目录并安装依赖：

@@ -35,5 +35,26 @@ async def get_irrigation_status() -> str:
 数据更新时间: {data.get('last_update') or '暂无数据'}
 """
     except Exception as e:
+        # 尝试从本地数据库读取作为 fallback
+        try:
+            import sqlite3
+            db_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "sensor", "sensor.db")
+            if os.path.exists(db_path):
+                with sqlite3.connect(db_path) as conn:
+                    conn.row_factory = sqlite3.Row
+                    cursor = conn.execute("SELECT * FROM sensor_data WHERE device_id = 'ESP8266_001'")
+                    row = cursor.fetchone()
+                    if row:
+                         return f"""
+--- 实时环境数据 (离线模式) ---
+温度: {row['temperature']}°C
+空气湿度: {row['humidity']}%
+土壤湿度: {row['soil_moisture']}%
+水泵状态: 未知 (API连接失败)
+数据更新时间: {row['timestamp']}
+"""
+        except Exception:
+            pass
+            
         logger.error(f"Failed to fetch status: {e}")
         return f"Failed to fetch status: {str(e)}"

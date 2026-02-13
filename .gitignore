@@ -16,6 +16,20 @@ client/mcp-client/mcp_servers.json
 **/*.key
 # ... existing code ...
 
+# IDE / editor settings
+.idea/
+.vscode/
+.trae/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Local databases and logs
+*.db
+*.log
+debug_log.txt
+
 # 忽略虚拟环境文件
 .venv
 

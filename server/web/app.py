@@ -154,38 +154,31 @@ global_state = {
 }
 
 # 传感器数据文件路径 (用于与 Sensor MCP 共享数据)
-SENSOR_DATA_FILE = os.path.join(os.path.dirname(__file__), "..", "sensor", "sensor_data.json")
+SENSOR_DB_FILE = os.path.join(os.path.dirname(__file__), "..", "sensor", "sensor.db")
 
 def save_sensor_data_to_file(data: dict):
-    """将传感器数据写入共享文件，供 Sensor MCP 读取"""
+    """将传感器数据写入共享数据库，供 Sensor MCP 读取"""
     try:
         # 确保目录存在
-        os.makedirs(os.path.dirname(SENSOR_DATA_FILE), exist_ok=True)
+        os.makedirs(os.path.dirname(SENSOR_DB_FILE), exist_ok=True)
         
-        # 读取现有数据
-        existing_data = {}
-        if os.path.exists(SENSOR_DATA_FILE):
-            try:
-                with open(SENSOR_DATA_FILE, "r", encoding="utf-8") as f:
-                    existing_data = json.load(f)
-            except:
-                pass
-        
-        # 更新默认设备数据 (假设设备ID为 ESP8266_001)
         device_id = "ESP8266_001"
-        existing_data[device_id] = {
-            "temperature": data.get("temperature", 0),
-            "humidity": data.get("humidity", 0),
-            "soil_moisture": data.get("soil_moisture", 0),
-            "timestamp": datetime.now().isoformat()
-        }
-        
-        # 写入文件
-        with open(SENSOR_DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump(existing_data, f, indent=2, ensure_ascii=False)
+        import sqlite3
+        with sqlite3.connect(SENSOR_DB_FILE) as conn:
+            conn.execute("""
+                INSERT OR REPLACE INTO sensor_data (device_id, temperature, humidity, soil_moisture, timestamp)
+                VALUES (?, ?, ?, ?, ?)
+            """, (
+                device_id, 
+                data.get("temperature", 0), 
+                data.get("humidity", 0), 
+                data.get("soil_moisture", 0), 
+                datetime.now().isoformat()
+            ))
+            conn.commit()
             
     except Exception as e:
-        print(f"⚠️  写入传感器数据文件失败: {e}")
+        print(f"⚠️  写入传感器数据数据库失败: {e}")
 
 # ==================== REST API 端点 ====================
 

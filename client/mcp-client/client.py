@@ -1,4 +1,5 @@
 import asyncio
+import argparse
 import os
 import time
 import uuid
@@ -17,10 +18,13 @@ from prompts import ORCHESTRATOR_PROMPT, PERCEPTION_PROMPT, REASONING_PROMPT, AC
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# 如果需要调试，可以设置为 DEBUG
+# logging.basicConfig(level=logging.DEBUG)
+
 # 加载 .env 文件
 load_dotenv()
 
-# SYSTEM_PROMPT Removed in favor of multi-agent prompts
+# SYSTEM_PROMPT Removed in favor of multi-agent promptsr of multi-agent prompts
 
 class MCPClient:
     def __init__(self, connection_timeout: int = 60, max_retries: int = 3, tool_timeout: int = 120):
@@ -260,14 +264,25 @@ class MCPClient:
             )
             attempt_stack = AsyncExitStack()
             try:
+                logger.info(f"🚀 [{server_id}] 启动进程: {command} {' '.join(args)}")
+                
                 stdio_transport = await attempt_stack.enter_async_context(stdio_client(server_params))
                 stdio, write = stdio_transport
+                
+                logger.info(f"📡 [{server_id}] 进程已启动，创建会话...")
+                
                 session = await attempt_stack.enter_async_context(ClientSession(stdio, write))
+                
+                logger.info(f"🔗 [{server_id}] 会话已创建，开始初始化...")
+                
                 await asyncio.wait_for(session.initialize(), timeout=timeout)
+                
+                logger.info(f"✅ [{server_id}] 初始化完成")
                 
                 self._server_exit_stacks[server_id] = attempt_stack
                 self.sessions[server_id] = {"session": session}
-            except Exception:
+            except Exception as e:
+                logger.error(f"❌ [{server_id}] 连接失败: {e}")
                 with suppress(Exception):
                     await attempt_stack.aclose()
                 raise
@@ -290,10 +305,15 @@ class MCPClient:
         for server_id, session_info in self.sessions.items():
             session = session_info["session"]
             try:
-                # 添加超时控制到工具列表获取
-                response = await asyncio.wait_for(session.list_tools(), timeout=20)
+                logger.info(f"🔍 [{server_id}] 开始获取工具列表...")
+                start_time = time.time()
                 
+                # 减少超时时间到 10 秒，更快发现问题
+                response = await asyncio.wait_for(session.list_tools(), timeout=10)
+                
+                elapsed = time.time() - start_time
                 tool_count = len(response.tools)
+                
                 for tool in response.tools:
                     self.tools_map[tool.name] = {
                         "server_id": server_id,
@@ -302,13 +322,13 @@ class MCPClient:
                     }
                     logger.info(f"  📧 工具: {tool.name}, 来源: {server_id}")
                 
-                logger.info(f"✅ 服务端 {server_id}: 加载了 {tool_count} 个工具")
+                logger.info(f"✅ [{server_id}] 加载了 {tool_count} 个工具 (耗时: {elapsed:.2f}秒)")
                 successful_loads += 1
                 
             except asyncio.TimeoutError:
-                logger.error(f"❌ 从服务端 {server_id} 获取工具列表超时")
+                logger.error(f"❌ [{server_id}] 获取工具列表超时 (>10秒)")
             except Exception as e:
-                logger.error(f"❌ 从服务端 {server_id} 获取工具列表时出错: {e}")
+                logger.error(f"❌ [{server_id}] 获取工具列表时出错: {e}")
         
         total_tools = len(self.tools_map)
         logger.info(f"📊 工具加载结果: {successful_loads}/{total_sessions} 个服务，共 {total_tools} 个工具可用")
@@ -347,7 +367,19 @@ class MCPClient:
         """通用 Agent 执行循环"""
         tool_cycle_count = 0
         while True:
-            # print(f"DEBUG: Sending messages to LLM: {json.dumps(messages, ensure_ascii=False, indent=2)}")
+            # 调试：显示发送给 LLM 的消息
+            logger.debug(f"📤 发送给 LLM 的消息数: {len(messages)}")
+            for i, msg in enumerate(messages):
+                role = msg.get("role", "unknown")
+                if role == "tool":
+                    content_preview = msg.get("content", "")[:50]
+                    logger.debug(f"  [{i}] {role}: {content_preview}...")
+                elif "tool_calls" in msg:
+                    logger.debug(f"  [{i}] {role}: {len(msg['tool_calls'])} tool calls")
+                else:
+                    content_preview = msg.get("content", "")[:50]
+                    logger.debug(f"  [{i}] {role}: {content_preview}...")
+            
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
@@ -400,7 +432,19 @@ class MCPClient:
                 if tool_cycle_count > 10:
                     return "系统检测到循环调用，已停止执行。"
 
+                print()  # 换行
+                print(f"🔧 执行 {len(tool_calls)} 个工具调用...")
+                logger.info(f"🔧 执行 {len(tool_calls)} 个工具调用...")
+                
                 tool_results = await self._process_tool_calls(tool_calls)
+                
+                # 显示工具结果摘要
+                print(f"📥 收到 {len(tool_results)} 个工具结果:")
+                for i, result in enumerate(tool_results, 1):
+                    content = result["content"]
+                    preview = content[:100] + "..." if len(content) > 100 else content
+                    print(f"  ✅ 工具 {i} 返回: {preview}")
+                    logger.info(f"  ✅ 工具 {i} 返回: {preview}")
                 
                 # 统一转换 tool_calls 为 dict 格式
                 tool_calls_dicts = []
@@ -417,7 +461,7 @@ class MCPClient:
                 self._append_assistant_tool_calls(tool_calls_dicts, history=messages)
                 messages.extend(tool_results)
                 
-                # Check for errors loop
+                # 检查错误循环
                 all_errors = True
                 for result in tool_results:
                      if not result["content"].startswith("Error:"):
@@ -426,6 +470,9 @@ class MCPClient:
                 
                 if all_errors:
                      return "工具调用失败，请检查参数或重试。"
+                
+                print(f"🔄 继续对话，等待 LLM 处理工具结果...\n")
+                logger.info(f"🔄 继续对话，等待 LLM 处理工具结果...")
                 continue
             else:
                 print()
@@ -435,7 +482,7 @@ class MCPClient:
     async def _run_perception_phase(self, query: str):
         print(f"\n📡 [Phase 1] 感知层启动...")
         # 工具名称可能带或不带前缀，根据实际加载情况匹配
-        target_tools = ['get_irrigation_status', 'get_forecast_week', 'get_sensor_data', 'get_crop_info', 'list_devices']
+        target_tools = ['get_irrigation_status', 'get_forecast_week', 'get_sensor_data', 'get_crop_info', 'list_devices', 'get_observe']
         tools = []
         
         all_tools = await self._build_tool_list()
@@ -471,7 +518,13 @@ class MCPClient:
 
     async def _run_action_phase(self, decision_json: dict):
         print(f"\n🚜 [Phase 3] 执行层启动...")
-        tools = [t for t in await self._build_tool_list() if t['function']['name'] in ['start_irrigation']]
+        target_tools = ['start_irrigation', 'get_irrigation_status']
+        tools = []
+        all_tools = await self._build_tool_list()
+        for t in all_tools:
+            name = t['function']['name']
+            if any(name == target or name.endswith(f".{target}") for target in target_tools):
+                tools.append(t)
         messages = [
             {"role": "system", "content": ACTION_PROMPT},
             {"role": "user", "content": f"已确认决策：\n{json.dumps(decision_json, ensure_ascii=False)}\n\n用户已确认执行。请下发指令。"}
@@ -538,35 +591,44 @@ class MCPClient:
             
             if decision_json:
                 # 提取自然语言总结（JSON 之前的部分）
-                # summary = reasoning_output[:reasoning_output.find("{")].strip()
-                # # 清理可能存在的 markdown 代码块标记
-                # summary = summary.replace("```json", "").replace("```", "").strip()
-                # if summary:
-                #     print(f"\n{summary}\n")
+                brace_index = reasoning_output.find("{")
+                summary = reasoning_output if brace_index == -1 else reasoning_output[:brace_index]
+                summary = summary.strip()
+                # 清理可能存在的 markdown 代码块标记
+                summary = summary.replace("```json", "").replace("```", "").strip()
                 
                 decision_core = decision_json.get("decision", {})
                 reasoning_core = decision_json.get("decision_reasoning", {})
+
+                # 使用从 reasoning_output 提取的自然语言总结，而不是硬编码的 f-string
+                # 如果没有提取到总结（比如 LLM 只输出了 JSON），则回退到之前的逻辑或生成一个简单的总结
+                
+                final_explanation = summary if summary else f"根据当前数据分析：水分胁迫评估为 {reasoning_core.get('water_stress_assessment', 'N/A')}。"
+                has_structured_summary = ("📋 具体建议" in final_explanation) or ("具体建议" in final_explanation)
 
                 if decision_core.get("irrigate") is True:
                     self.pending_decision = decision_core
                     
                     # 构造确认请求
+                    report_body = final_explanation
+                    if not has_structured_summary:
+                        report_body = (
+                            f"{final_explanation}\n\n"
+                            f"💡 **执行建议**\n"
+                            f"   ✅ 建议执行灌溉\n"
+                            f"   💧 建议灌溉量: {decision_core.get('irrigation_amount_mm', 0)} mm\n"
+                            f"   ⏱️ 建议时长: {decision_core.get('irrigation_duration_min', 0)} 分钟\n"
+                            f"   🕒 执行时机: {decision_core.get('irrigation_time_window', '立即')}\n"
+                            f"   📈 决策置信度: {decision_json.get('confidence_score', 0)*100:.0f}%\n\n"
+                            f"📝 **节水策略**\n"
+                            f"   {reasoning_core.get('water_saving_strategy', 'N/A')}"
+                        )
+
                     confirm_msg = (
                         f"\n{'='*60}\n"
                         f"🌾 **智能灌溉决策报告**\n"
                         f"{'='*60}\n\n"
-                        f"📊 **当前状态分析**\n"
-                        f"   💧 水分胁迫评估: {reasoning_core.get('water_stress_assessment', 'N/A')}\n"
-                        f"   🌤️  气象影响分析: {reasoning_core.get('weather_impact_analysis', 'N/A')}\n"
-                        f"   🌱 作物需水分析: {reasoning_core.get('crop_demand_analysis', 'N/A')}\n\n"
-                        f"💡 **决策建议**\n"
-                        f"   ✅ 建议执行灌溉\n"
-                        f"   💧 建议灌溉量: {decision_core.get('irrigation_amount_mm', 0)} mm\n"
-                        f"   ⏱️ 建议时长: {decision_core.get('irrigation_duration_min', 0)} 分钟\n"
-                        f"   🕒 执行时机: {decision_core.get('irrigation_time_window', '立即')}\n"
-                        f"   📈 决策置信度: {decision_json.get('confidence_score', 0)*100:.0f}%\n\n"
-                        f"📝 **节水策略**\n"
-                        f"   {reasoning_core.get('water_saving_strategy', 'N/A')}\n"
+                        f"{report_body}\n"
                         f"\n{'='*60}\n"
                         f"❓ **是否立即执行灌溉？**\n"
                         f"   输入 'y' 或 '是' 确认执行\n"
@@ -575,18 +637,22 @@ class MCPClient:
                     )
                     return confirm_msg
                 else:
+                    report_body = final_explanation
+                    if not has_structured_summary:
+                        report_body = (
+                            f"{final_explanation}\n\n"
+                            f"💡 **执行建议**\n"
+                            f"   ✅ 无需灌溉\n"
+                            f"   📈 决策置信度: {decision_json.get('confidence_score', 0)*100:.0f}%\n\n"
+                            f"📝 **决策依据**\n"
+                            f"   {reasoning_core.get('water_saving_strategy', 'N/A')}"
+                        )
+
                     result = (
                         f"\n{'='*60}\n"
                         f"🌾 **智能灌溉决策报告**\n"
                         f"{'='*60}\n\n"
-                        f"📊 **当前状态分析**\n"
-                        f"   💧 水分胁迫评估: {reasoning_core.get('water_stress_assessment', 'N/A')}\n"
-                        f"   🌤️  气象影响分析: {reasoning_core.get('weather_impact_analysis', 'N/A')}\n\n"
-                        f"💡 **决策建议**\n"
-                        f"   ✅ 无需灌溉\n"
-                        f"   📈 决策置信度: {decision_json.get('confidence_score', 0)*100:.0f}%\n\n"
-                        f"📝 **决策依据**\n"
-                        f"   {reasoning_core.get('water_saving_strategy', 'N/A')}\n"
+                        f"{report_body}\n"
                         f"\n{'='*60}\n"
                     )
                     return result
@@ -600,83 +666,79 @@ class MCPClient:
 
 
 
-    async def _process_tool_calls(self, tool_calls) -> list:
-        """处理工具调用（非流式，带超时控制）"""
-        tool_results = []
-        for tool_call in tool_calls:
-            tool_call_id, tool_name, tool_args_str = self._normalize_tool_call(tool_call)
+    async def _execute_single_tool(self, tool_call) -> dict:
+        """执行单个工具调用"""
+        tool_call_id, tool_name, tool_args_str = self._normalize_tool_call(tool_call)
 
-            try:
-                tool_args = json.loads(tool_args_str)
-            except json.JSONDecodeError:
-                logger.error(f"无法解析工具参数 JSON: {tool_args_str}")
-                tool_results.append({
-                    "role": "tool",
-                    "content": f"Error: Invalid JSON arguments received: {tool_args_str}",
-                    "tool_call_id": tool_call_id,
-                })
-                continue
+        try:
+            tool_args = json.loads(tool_args_str)
+        except json.JSONDecodeError:
+            logger.error(f"无法解析工具参数 JSON: {tool_args_str}")
+            return {
+                "role": "tool",
+                "content": f"Error: Invalid JSON arguments received: {tool_args_str}",
+                "tool_call_id": tool_call_id,
+            }
 
-            tool_info = self.tools_map.get(tool_name)
-            
-            # 尝试处理带有前缀的工具名 (e.g. "sensor.get_sensor_data" -> "get_sensor_data")
-            if not tool_info and "." in tool_name:
-                short_name = tool_name.split(".")[-1]
-                # logger.info(f"⚠️ 工具 {tool_name} 未找到，尝试使用短名称 {short_name}...")
-                tool_info = self.tools_map.get(short_name)
-                # 如果找到了，更新 tool_name 以便后续调用使用正确名称
-                if tool_info:
-                    tool_name = short_name
-
-            if not tool_info:
-                error_message = f"错误：未找到工具 {tool_name} 的配置信息。"
-                logger.error(error_message)
-                tool_results.append({
-                    "role": "tool",
-                    "content": error_message,
-                    "tool_call_id": tool_call_id,
-                })
-                continue
-
-            server_id = tool_info["server_id"]
-            session = self.sessions[server_id]["session"]
-            
-            try:
-                logger.info(f"🔧 调用工具 {tool_name} (服务: {server_id}, 参数: {tool_args})")
-                
-                # 添加工具调用超时控制
-                result = await asyncio.wait_for(session.call_tool(tool_name, tool_args), timeout=self.tool_timeout)
-                
-                result_content = result.content[0].text
-                if tool_name == "browser-use":
-                    # result_content = await self._maybe_wait_browser_use_result(session, result_content)
-                    pass
-                logger.info(f"✅ 工具 {tool_name} 执行成功")
-
-                tool_results.append({
-                    "role": "tool",
-                    "content": result_content,
-                    "tool_call_id": tool_call_id,
-                })
-                
-            except asyncio.TimeoutError:
-                error_message = f"工具 {tool_name} 调用超时 ({self.tool_timeout}秒)"
-                logger.error(f"❌ {error_message}")
-                tool_results.append({
-                    "role": "tool",
-                    "content": f"Error: {error_message}",
-                    "tool_call_id": tool_call_id,
-                })
-            except Exception as e:
-                error_message = f"调用工具 {tool_name} 时出错: {str(e)}"
-                logger.error(f"❌ {error_message}")
-                tool_results.append({
-                    "role": "tool",
-                    "content": f"Error: {error_message}",
-                    "tool_call_id": tool_call_id,
-                })
+        tool_info = self.tools_map.get(tool_name)
         
-        return tool_results
+        # 尝试处理带有前缀的工具名 (e.g. "sensor.get_sensor_data" -> "get_sensor_data")
+        if not tool_info and "." in tool_name:
+            short_name = tool_name.split(".")[-1]
+            tool_info = self.tools_map.get(short_name)
+            if tool_info:
+                tool_name = short_name
+
+        if not tool_info:
+            error_message = f"错误：未找到工具 {tool_name} 的配置信息。"
+            logger.error(error_message)
+            return {
+                "role": "tool",
+                "content": error_message,
+                "tool_call_id": tool_call_id,
+            }
+
+        server_id = tool_info["server_id"]
+        session = self.sessions[server_id]["session"]
+        
+        try:
+            logger.info(f"🔧 调用工具 {tool_name} (服务: {server_id}, 参数: {tool_args})")
+            
+            result = await asyncio.wait_for(session.call_tool(tool_name, tool_args), timeout=self.tool_timeout)
+            
+            result_content = result.content[0].text
+            if tool_name == "browser-use":
+                # result_content = await self._maybe_wait_browser_use_result(session, result_content)
+                pass
+            logger.info(f"✅ 工具 {tool_name} 执行成功")
+
+            return {
+                "role": "tool",
+                "content": result_content,
+                "tool_call_id": tool_call_id,
+            }
+            
+        except asyncio.TimeoutError:
+            error_message = f"工具 {tool_name} 调用超时 ({self.tool_timeout}秒)"
+            logger.error(f"❌ {error_message}")
+            return {
+                "role": "tool",
+                "content": f"Error: {error_message}",
+                "tool_call_id": tool_call_id,
+            }
+        except Exception as e:
+            error_message = f"调用工具 {tool_name} 时出错: {str(e)}"
+            logger.error(f"❌ {error_message}")
+            return {
+                "role": "tool",
+                "content": f"Error: {error_message}",
+                "tool_call_id": tool_call_id,
+            }
+
+    async def _process_tool_calls(self, tool_calls) -> list:
+        """并行处理工具调用"""
+        tasks = [self._execute_single_tool(tc) for tc in tool_calls]
+        return await asyncio.gather(*tasks)
 
     def _normalize_tool_call(self, tool_call):
         if isinstance(tool_call, dict):
@@ -882,6 +944,10 @@ class MCPClient:
 
 
 async def main():
+    parser = argparse.ArgumentParser(description="FarmMind MCP Client")
+    parser.add_argument("--init-only", action="store_true", help="只初始化连接并列出工具后退出")
+    args = parser.parse_args()
+
     # 启动并初始化 MCP 客户端
     client = MCPClient()
     try:
@@ -889,6 +955,8 @@ async def main():
         await client.load_servers_from_config("mcp_servers.json")
         # 列出 MCP 服务器上的工具
         await client.list_tools()
+        if args.init_only:
+            return
         # 运行交互式聊天循环，处理用户对话
         await client.chat_loop()
     finally:
