@@ -1,12 +1,13 @@
 from mcp.server.fastmcp import FastMCP
 import json
+from typing import Optional
 
 mcp = FastMCP("decision")
 
 @mcp.tool()
 def make_irrigation_decision(
     current_soil_moisture: float,
-    current_temperature: float,
+    current_temperature: Optional[float],
     current_humidity: float,
     rain_forecast_24h: float,
     crop_ideal_moisture: float,
@@ -25,6 +26,9 @@ def make_irrigation_decision(
         crop_min_temp: Minimum temperature tolerance for the crop
         crop_max_temp: Maximum temperature tolerance for the crop
     """
+    # 当气温缺失时使用 25°C 作为中性默认值，避免决策失败
+    if current_temperature is None:
+        current_temperature = 25.0
     
     reasons = []
     should_irrigate = False

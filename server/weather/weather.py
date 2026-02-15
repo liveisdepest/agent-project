@@ -17,21 +17,17 @@ OWM_BASE_URL = "https://api.openweathermap.org/data/2.5"
 # 移除全局 HTTP 客户端，避免初始化阻塞
 # 改为每次请求时创建临时客户端
 
-def get_api_key() -> str:
-    """获取 API Key"""
-    api_key = os.getenv("OWM_API_KEY")
-    if not api_key:
-        # Fallback for local development if not set in env
-        # In production, this should be strictly env var
-        return "你的open weathermap_api_key"
-    return api_key
+def get_api_key() -> str | None:
+    """获取 API Key，未配置时返回 None（请设置 OWM_API_KEY 环境变量）"""
+    return os.getenv("OWM_API_KEY") or None
 
 async def make_owm_request(endpoint: str, params: Dict[str, Any]) -> Dict[str, Any] | None:
     """向 OpenWeatherMap API 发送请求并返回响应数据."""
+    api_key = get_api_key()
+    if not api_key:
+        return None  # 未配置 OWM_API_KEY，跳过请求
     url = f"{OWM_BASE_URL}/{endpoint}"
-    
-    # 添加通用参数
-    params["appid"] = get_api_key()
+    params["appid"] = api_key
     params["units"] = "metric"  # 使用公制单位 (摄氏度)
     params["lang"] = "zh_cn"    # 返回中文描述
     

@@ -32,8 +32,8 @@ PERCEPTION_PROMPT = """
 
 🔧 允许使用的工具
 - get_sensor_data (获取实时传感器数据，参数 device_id='ESP8266_001')
-- get_forecast_week (获取天气预报)
-- get_observe (获取实时气象数据，如气温、气压)
+- get_forecast_week(city='城市拼音') 获取天气预报，**必须传 city 参数**，如曲靖用 city="Qujing"
+- get_observe(city='城市拼音') 获取实时气温，**必须传 city 参数**
 - get_crop_info (获取作物知识)
 - get_irrigation_status (获取当前灌溉状态)
 - list_devices (列出可用设备)
@@ -64,19 +64,19 @@ PERCEPTION_PROMPT = """
 输出 JSON 结构（使用工具返回的真实数据）：
 {
   "timestamp": "当前时间",
-  "soil_moisture": 从 get_sensor_data 获取的实际值,
-  "soil_temperature": 从 get_sensor_data 获取的实际值,
-  "air_temperature": 从 get_observe 获取的 temperature 值 (若无则尝试从 forecast 获取),
-  "air_humidity": 从 get_sensor_data 获取的实际值,
+  "soil_moisture": 从 get_sensor_data 的 soil_moisture 获取,
+  "soil_temperature": 传感器无此字段则填 null,
+  "air_temperature": 从 get_observe 的 temperature 获取 (若无则用 get_forecast_week 当日 max_temp),
+  "air_humidity": 从 get_sensor_data 的 humidity 获取,
   "sensor_confidence": 0.9,
   "rain_probability": 从 get_forecast_week 列表中提取当天的 rain_probability (%),
   "expected_rainfall": 从 get_forecast_week 列表中提取当天的 total_rain (mm),
   "forecast_max_temp": 从 get_forecast_week 列表中提取当天的 max_temp,
   "crop_info": {
     "name": 从 get_crop_info 获取 (如果工具返回 not found，这里填 "unknown" 或保留用户输入的原始名称),
-    "ideal_moisture": 从 get_crop_info 获取 (若未知填 null),
-    "min_temp": 从 get_crop_info 获取 (若未知填 null),
-    "max_temp": 从 get_crop_info 获取 (若未知填 null)
+    "ideal_moisture": 从 get_crop_info 的 ideal_soil_moisture 字段获取 (若未知填 null),
+    "min_temp": 从 get_crop_info 的 min_temperature 获取 (若未知填 null),
+    "max_temp": 从 get_crop_info 的 max_temperature 获取 (若未知填 null)
   },
   "flags": ["normal" 或其他异常标志]
 }
@@ -110,17 +110,22 @@ REASONING_PROMPT = """
    - 如果感知数据中 `air_temperature` 为 null，尝试调用 `search` 查询当地实时气温。
 
 2. **决策参数准备**：
-   - 确保 `rain_forecast_24h` 使用的是感知数据中的 `expected_rainfall`。
-   - 确保作物参数使用的是搜索到的或已知的数据。
+   - `rain_forecast_24h` 必须使用感知数据中的 `expected_rainfall`；若为 null 则传 0。
+   - 确保作物参数使用搜索到或已知的数据。
 
-3. **灌溉决策**：
+3. **🚨 天气数据真实性约束（硬约束）**：
+   - 当 `expected_rainfall` 为 null 或 `flags` 含 `weather_unavailable` 时：**禁止**编造任何降雨预报。
+   - 禁止使用「预计有降雨」「未来有雨」「降雨预报显示」等表述，除非感知数据中确有非 null 的 rain_probability 和 expected_rainfall。
+   - 天气数据缺失时，weather_impact_analysis 应写「天气数据缺失，无法获取降雨预报」，不得臆测。
+
+4. **灌溉决策**：
    - 调用 `make_irrigation_decision` 获取建议。
-   - 如果决策工具返回需要灌溉，但天气预报显示即将下雨（rain_probability > 60% 且 rainfall > 5mm），请在解释中权衡利弊（是否延迟）。
+   - 仅当感知数据中 expected_rainfall 有实际数值且 > 5mm、rain_probability > 60% 时，才可在解释中提及「预报有雨、可延迟灌溉」。
 
-4. **生成专家解释**：
-   - 综合所有信息生成自然语言建议。
+5. **生成专家解释**：
+   - 综合所有信息生成自然语言建议，**不得编造感知数据中不存在的天气信息**。
 
-5. **输出最终结果**
+6. **输出最终结果**
 
 📤 输出格式（严格）
 请严格按照以下顺序输出内容：
@@ -174,19 +179,15 @@ ACTION_PROMPT = """
 把“已确认的决策”安全地转化为设备动作
 
 🔧 允许使用的工具
-- start_irrigation
+- start_irrigation(zone: str, duration_minutes: int) 参数：zone 默认用 "zone_1"，duration_minutes 从决策的 irrigation_duration_min 获取
 - get_irrigation_status
 
-禁止使用：
-- 传感器工具
-- 天气工具
-- 决策工具
+禁止使用：传感器工具、天气工具、决策工具
 
 🧠 执行规则（硬约束）
 - 必须等待用户明确确认
-- 检查当前水泵状态
-- 避免重复开启
-- 记录执行结果
+- 调用 start_irrigation 时：zone 填 "zone_1"（单区系统），duration_minutes 使用决策中的 irrigation_duration_min
+- 检查当前水泵状态，避免重复开启
 
 📤 输出格式
 {

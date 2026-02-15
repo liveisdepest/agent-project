@@ -1,14 +1,17 @@
 # ... existing code ...
 
 # Environment and configuration files
-client/mcp-client/.env
-client/mcp-client/*.env
-client/mcp-client/.env.*
-!client/mcp-client/.env.example
+# 忽略所有 .env 文件（包含敏感信息）
+.env
+*.env
+.env.*
+# 但保留 .env.example 模板文件
+!.env.example
+!**/.env.example
 
-# Configuration files
+# 忽略可能包含敏感信息的配置文件
 client/mcp-client/config.json
-client/mcp-client/mcp_servers.json
+# mcp_servers.json 不包含敏感信息，应该提交
 
 # API keys and secrets
 **/api_keys.txt

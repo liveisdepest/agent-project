@@ -1,0 +1,46 @@
+{
+  "mcpServers": {
+    "weather": {
+      "command": "uv",
+      "args": ["run", "weather.py"],
+      "cwd": "..\\..\\server\\weather",
+      "env": {}
+    },
+    "irrigation": {
+      "command": "uv",
+      "args": ["run", "main.py"],
+      "cwd": "..\\..\\server\\irrigation",
+      "env": {}
+    },
+    "filesystem": {
+      "command": "uv",
+      "args": ["run", "filesystem.py"],
+      "cwd": "..\\..\\server\\filesystem",
+      "env": {}
+    },
+    "sensor": {
+      "command": "uv",
+      "args": ["run", "sensor.py"],
+      "cwd": "..\\..\\server\\sensor",
+      "env": {}
+    },
+    "crop_knowledge": {
+      "command": "uv",
+      "args": ["run", "knowledge.py"],
+      "cwd": "..\\..\\server\\crop_knowledge",
+      "env": {}
+    },
+    "decision": {
+      "command": "uv",
+      "args": ["run", "decision.py"],
+      "cwd": "..\\..\\server\\decision",
+      "env": {}
+    },
+    "search": {
+      "command": "uv",
+      "args": ["run", "src/duckduckgo_mcp_server/server.py"],
+      "cwd": "..\\..\\server\\search",
+      "env": {}
+    }
+  }
+}

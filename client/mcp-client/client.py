@@ -4,7 +4,7 @@ import os
 import time
 import uuid
 import re
-from urllib.parse import quote_plus, urlparse
+from urllib.parse import urlparse
 from openai import OpenAI
 from dotenv import load_dotenv
 from contextlib import AsyncExitStack, suppress
@@ -21,8 +21,9 @@ logger = logging.getLogger(__name__)
 # 如果需要调试，可以设置为 DEBUG
 # logging.basicConfig(level=logging.DEBUG)
 
-# 加载 .env 文件
-load_dotenv()
+# 加载 .env 文件（优先从脚本所在目录加载）
+_env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+load_dotenv(_env_path)
 
 # SYSTEM_PROMPT Removed in favor of multi-agent promptsr of multi-agent prompts
 
@@ -97,7 +98,7 @@ class MCPClient:
             env = self._build_child_env(server_id, env_config)
             
             # 尝试连接，失败则跳过
-            print(f"DEBUG: Attempting to connect to {server_id}...")
+            logger.debug(f"Attempting to connect to {server_id}...")
             if url:
                 success = await self.connect_to_sse_server(
                     server_id,
@@ -113,7 +114,7 @@ class MCPClient:
                 if not command:
                     logger.error(f"❌ 服务端 {server_id} 缺少 command/url 配置，跳过")
                     continue
-                print(f"DEBUG: Connecting to local server {server_id} with command: {command} {args}")
+                logger.debug(f"Connecting to local server {server_id} with command: {command} {args}")
                 success = await self.connect_to_local_server(
                     server_id,
                     command,
@@ -123,7 +124,7 @@ class MCPClient:
                     timeout=timeout,
                     max_retries=max_retries,
                 )
-            print(f"DEBUG: Connection to {server_id} result: {success}")
+            logger.debug(f"Connection to {server_id} result: {success}")
             if success:
                 successful_connections += 1
 
@@ -491,10 +492,15 @@ class MCPClient:
             # 检查名称是否完全匹配或作为后缀匹配（例如 weather.get_forecast_week）
             if any(name == target or name.endswith(f".{target}") for target in target_tools):
                 tools.append(t)
+        
+        tool_names = [t['function']['name'] for t in tools]
+        logger.info(f"感知层可用工具数: {len(tools)} -> {tool_names}")
+        if len(tools) == 0:
+            logger.warning("⚠️ 感知层无可用工具！请检查 sensor/weather/crop_knowledge MCP 服务是否已连接。运行 python client.py --init-only 可查看连接状态。")
                 
         messages = [
             {"role": "system", "content": PERCEPTION_PROMPT},
-            {"role": "user", "content": f"任务：获取当前环境状态。用户上下文：{query}"}
+            {"role": "user", "content": f"任务：获取当前环境状态。用户上下文：{query}\n\n请先调用 get_sensor_data、get_forecast_week、get_observe、get_crop_info 获取数据，再输出 JSON。"}
         ]
         return await self._execute_agent_loop(messages, tools)
 
