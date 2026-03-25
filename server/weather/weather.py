@@ -7,6 +7,8 @@ import json
 from collections import Counter
 import sys
 from pypinyin import lazy_pinyin
+from dotenv import load_dotenv
+load_dotenv()
 
 # 初始化 FastMCP 服务器
 mcp = FastMCP("weather")
@@ -18,14 +20,59 @@ OWM_BASE_URL = "https://api.openweathermap.org/data/2.5"
 # 改为每次请求时创建临时客户端
 
 def get_api_key() -> str | None:
-    """获取 API Key，未配置时返回 None（请设置 OWM_API_KEY 环境变量）"""
-    return os.getenv("OWM_API_KEY") or None
+    key = os.getenv("OWM_API_KEY")
+    print(f"OWM_API_KEY loaded: {'YES' if key else 'NO'}", file=sys.stderr)
+    return key or None
 
-async def make_owm_request(endpoint: str, params: Dict[str, Any]) -> Dict[str, Any] | None:
-    """向 OpenWeatherMap API 发送请求并返回响应数据."""
+def _build_weather_error_payload(city: str, endpoint: str, detail: str, attempts: List[str] | None = None) -> Dict[str, Any]:
+    detail = detail or "unknown_error"
+    hints: List[str] = []
+
+    if "missing_api_key" in detail:
+        hints = [
+            "未检测到 OWM_API_KEY，请在 weather 服务运行环境中配置该变量。",
+            "确认配置后重启 weather MCP 服务。"
+        ]
+    elif "timeout" in detail:
+        hints = [
+            "访问 OpenWeatherMap 超时，请检查本机网络连通性。",
+            "若网络受限，请配置代理或切换可用网络。"
+        ]
+    elif "request_error" in detail:
+        hints = [
+            "请求 OpenWeatherMap 失败，请检查 DNS/网络/防火墙。",
+            "确认服务端可以访问 api.openweathermap.org。"
+        ]
+    elif "http_status" in detail:
+        hints = [
+            "OpenWeatherMap 返回了非 2xx 状态，请检查 key 权限、配额和账号状态。",
+            "可在日志中查看具体 status code 与 message。"
+        ]
+    elif "api_error" in detail:
+        hints = [
+            "OpenWeatherMap 已返回业务错误，请检查城市名、key 有效性和请求参数。",
+            "必要时尝试改用英文城市名或拼音。"
+        ]
+    else:
+        hints = [
+            "请检查天气服务日志以定位具体失败原因。"
+        ]
+
+    payload: Dict[str, Any] = {
+        "error": f"无法获取 {city} 的天气数据。",
+        "endpoint": endpoint,
+        "detail": detail,
+        "hints": hints,
+    }
+    if attempts:
+        payload["query_attempts"] = attempts
+    return payload
+
+async def make_owm_request(endpoint: str, params: Dict[str, Any]) -> tuple[Dict[str, Any] | None, str | None]:
+    """向 OpenWeatherMap API 发送请求并返回 (响应数据, 错误原因)."""
     api_key = get_api_key()
     if not api_key:
-        return None  # 未配置 OWM_API_KEY，跳过请求
+        return None, "missing_api_key"
     url = f"{OWM_BASE_URL}/{endpoint}"
     params["appid"] = api_key
     params["units"] = "metric"  # 使用公制单位 (摄氏度)
@@ -36,10 +83,29 @@ async def make_owm_request(endpoint: str, params: Dict[str, Any]) -> Dict[str, A
         try:
             response = await client.get(url, params=params)
             response.raise_for_status()
-            return response.json()
+            data = response.json()
+            # API 返回的 cod 可能是 int 200 或 string "200"
+            cod = str(data.get("cod", "200"))
+            if cod != "200":
+                message = str(data.get("message", "unknown"))
+                return None, f"api_error:cod={cod},message={message}"
+            return data, None
+        except httpx.TimeoutException:
+            return None, "timeout"
+        except httpx.HTTPStatusError as e:
+            detail = f"http_status:{e.response.status_code}"
+            try:
+                err_payload = e.response.json()
+                message = err_payload.get("message")
+                if message:
+                    detail = f"{detail},message={message}"
+            except Exception:
+                pass
+            return None, detail
+        except httpx.RequestError as e:
+            return None, f"request_error:{str(e)}"
         except Exception as e:
-            # print(f"API Request Error: {e}", file=sys.stderr)
-            return None
+            return None, f"unexpected_error:{str(e)}"
 
 def _format_time(timestamp: int, timezone_offset: int = 0) -> str:
     """将 Unix 时间戳转换为 ISO 格式字符串 (考虑时区)"""
@@ -58,36 +124,127 @@ def _is_valid_response(data: Dict[str, Any] | None) -> bool:
     return True
 
 def _ensure_pinyin(text: str) -> str:
-    """如果包含中文，转换为拼音"""
+    """如果包含中文，转换为拼音，处理特殊城市名称"""
     if not text:
         return text
+    
+    # 特殊城市名称映射表
+    city_mapping = {
+        '西安': 'xian',
+        '重庆': 'chongqing',
+        '长春': 'changchun',
+        '长沙': 'changsha',
+        '成都': 'chengdu',
+        '广州': 'guangzhou',
+        '贵阳': 'guiyang',
+        '哈尔滨': 'harbin',
+        '杭州': 'hangzhou',
+        '合肥': 'hefei',
+        '呼和浩特': 'huhehaote',
+        '济南': 'jinan',
+        '昆明': 'kunming',
+        '曲靖': 'qujing',
+        '兰州': 'lanzhou',
+        '拉萨': 'lasa',
+        '南昌': 'nanchang',
+        '南京': 'nanjing',
+        '南宁': 'nanning',
+        '北京': 'beijing',
+        '上海': 'shanghai',
+        '天津': 'tianjin',
+        '石家庄': 'shijiazhuang',
+        '太原': 'taiyuan',
+        '武汉': 'wuhan',
+        '乌鲁木齐': 'wulumuqi',
+        '银川': 'yinchuan',
+        '郑州': 'zhengzhou'
+    }
+    
     # 简单的检查：如果包含非 ASCII 字符，假设是中文
     if not all(ord(c) < 128 for c in text):
-        # lazy_pinyin 返回 list，例如 ['bei', 'jing']
-        return "".join(lazy_pinyin(text))
+        # 首先检查是否在映射表中
+        if text in city_mapping:
+            return city_mapping[text]
+        # 使用 lazy_pinyin 转换，但处理多音字问题
+        pinyin_list = lazy_pinyin(text)
+        # 对于两个字的拼音，添加分隔符避免歧义
+        if len(pinyin_list) == 2:
+            return f"{pinyin_list[0]}{pinyin_list[1]}"
+        return "".join(pinyin_list)
     return text
 
-async def _fetch_owm_data(endpoint: str, city: str, province: str = "") -> Dict[str, Any] | None:
-    """尝试获取 OWM 数据，带有重试策略（CN后缀 vs 无后缀）"""
+import logging
+import time
+
+# 配置日志
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("weather_server")
+
+# 简单的内存缓存: (endpoint, city_pinyin) -> (data, timestamp)
+_CACHE: Dict[tuple[str, str], tuple[Dict[str, Any], float]] = {}
+CACHE_TTL = 600  # 10 分钟缓存
+
+async def _fetch_owm_data(endpoint: str, city: str, province: str = "") -> tuple[Dict[str, Any] | None, str]:
+    """尝试获取 OWM 数据，带有重试策略（CN后缀 vs 无后缀）和缓存"""
     # 自动转换为拼音
     city_pinyin = _ensure_pinyin(city)
+    cache_key = (endpoint, city_pinyin)
+
+    # 1. 检查缓存
+    if cache_key in _CACHE:
+        data, timestamp = _CACHE[cache_key]
+        if time.time() - timestamp < CACHE_TTL:
+            logger.info(f"Using cached data for {city} ({endpoint})")
+            return data, ""
+
+    attempts: List[str] = []
 
     # 策略 1: City,CN (优先尝试带国家代码)
     params = {"q": f"{city_pinyin},CN"}
-    data = await make_owm_request(endpoint, params)
+    data, err = await make_owm_request(endpoint, params)
+    if err:
+        attempts.append(f"{params['q']} -> {err}")
     
     if _is_valid_response(data):
-        return data
+        # 写入缓存
+        _CACHE[cache_key] = (data, time.time())
+        return data, ""
         
     # 策略 2: 仅 City (针对中文名称可能不需要后缀的情况，或者其他模糊情况)
     # OpenWeatherMap 有时对 "北京" 比 "北京,CN" 处理得更好，或者反之。
     params = {"q": city_pinyin}
-    data = await make_owm_request(endpoint, params)
+    data, err = await make_owm_request(endpoint, params)
+    if err:
+        attempts.append(f"{params['q']} -> {err}")
     
     if _is_valid_response(data):
-        return data
+        # 写入缓存
+        _CACHE[cache_key] = (data, time.time())
+        return data, ""
         
-    return None
+    return None, "; ".join(attempts) if attempts else "unknown_error"
+
+
+def _weather_error_json(city: str, endpoint: str, detail: str) -> str:
+    """???????????? JSON?"""
+    return json.dumps(
+        _build_weather_error_payload(city, endpoint, detail),
+        ensure_ascii=False
+    )
+
+
+async def _fetch_owm_or_error(
+    endpoint: str,
+    city: str,
+    province: str = "",
+    required_key: str | None = None
+) -> tuple[Dict[str, Any] | None, str | None]:
+    """?????????????????????? JSON?"""
+    data, error_detail = await _fetch_owm_data(endpoint, city, province)
+    if not data or (required_key and required_key not in data):
+        return None, _weather_error_json(city, endpoint, error_detail)
+    return data, None
+
 
 @mcp.tool()
 async def get_forecast_48h(city: str, province: str = "") -> str:
@@ -99,10 +256,14 @@ async def get_forecast_48h(city: str, province: str = "") -> str:
         city: 城市名称 (拼音或英文)
         province: 省份名称 (可选，用于辅助说明)
     """
-    data = await _fetch_owm_data("forecast", city, province)
-    
-    if not data or "list" not in data:
-        return json.dumps({"error": f"无法获取 {city} 的天气预报，请检查城市名称是否正确。"}, ensure_ascii=False)
+    data, error_json = await _fetch_owm_or_error(
+        "forecast",
+        city,
+        province,
+        required_key="list"
+    )
+    if error_json:
+        return error_json
 
     forecasts = []
     # 获取前 16 个数据点 (16 * 3 = 48小时)
@@ -148,10 +309,14 @@ async def get_forecast_week(city: str, province: str = "") -> str:
         province: 省份名称
     """
     # 使用统一的重试策略获取数据
-    data = await _fetch_owm_data("forecast", city, province)
-    
-    if not data or "list" not in data:
-        return json.dumps({"error": f"无法获取 {city} 的天气预报。请尝试使用拼音 (例如: 'Qujing')。"}, ensure_ascii=False)
+    data, error_json = await _fetch_owm_or_error(
+        "forecast",
+        city,
+        province,
+        required_key="list"
+    )
+    if error_json:
+        return error_json
 
     timezone_offset = data.get("city", {}).get("timezone", 28800)
     
@@ -226,10 +391,14 @@ async def get_observe(city: str, province: str = "") -> str:
         city: 城市名称
         province: 省份名称
     """
-    data = await _fetch_owm_data("weather", city, province)
+    data, error_detail = await _fetch_owm_data("weather", city, province)
     
     if not data:
-        return json.dumps({"error": f"无法获取 {city} 的实时天气。"}, ensure_ascii=False)
+        # 返回类型错误而不是详细的错误payload
+        return json.dumps(
+            {"error": "类型错误", "detail": error_detail},
+            ensure_ascii=False
+        )
 
     weather_desc = data["weather"][0]["description"] if data["weather"] else "未知"
     timezone_offset = data.get("timezone", 0)
@@ -256,10 +425,9 @@ async def get_rise_14day(city: str, province: str = "") -> str:
         city: 城市名称
         province: 省份名称
     """
-    data = await _fetch_owm_data("weather", city, province)
-    
-    if not data:
-        return json.dumps({"error": f"无法获取 {city} 的日出日落时间。"}, ensure_ascii=False)
+    data, error_json = await _fetch_owm_or_error("weather", city, province)
+    if error_json:
+        return error_json
 
     sys_data = data.get("sys", {})
     timezone_offset = data.get("timezone", 0)

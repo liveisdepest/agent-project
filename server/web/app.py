@@ -7,12 +7,14 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import Dict, List, Optional
 import asyncio
 import json
 from datetime import datetime
 import sys
 import os
+from contextlib import suppress
+from uuid import uuid4
 
 # 添加项目根目录到路径
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
@@ -40,6 +42,10 @@ class QueryRequest(BaseModel):
     query: str
     user_id: Optional[str] = "anonymous"
 
+class ConfirmRequest(BaseModel):
+    action: str
+    user_id: Optional[str] = "anonymous"
+
 class SensorDataResponse(BaseModel):
     temperature: float
     humidity: float
@@ -65,75 +71,77 @@ class ConnectionManager:
 
     async def broadcast(self, message: dict):
         """广播消息到所有连接"""
-        for connection in self.active_connections:
+        dead_connections: List[WebSocket] = []
+        for connection in list(self.active_connections):
             try:
                 await connection.send_json(message)
-            except:
-                pass
+            except Exception:
+                dead_connections.append(connection)
+        for connection in dead_connections:
+            self.disconnect(connection)
 
 manager = ConnectionManager()
 
 # ==================== 全局变量 ====================
 
-mcp_client = None
-mcp_initialized = False
+user_clients: Dict[str, object] = {}
+user_clients_lock = asyncio.Lock()
+mcp_server_config_path = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), '../../client/mcp-client/mcp_servers.json')
+)
+mcp_boot_ready = False
+mcp_boot_error: Optional[str] = None
 
 # ==================== 启动事件 ====================
 
 @app.on_event("startup")
 async def startup_event():
-    """应用启动时初始化MCP客户端（后台任务）"""
-    asyncio.create_task(init_mcp_client())
+    global mcp_boot_ready, mcp_boot_error
+    if os.path.exists(mcp_server_config_path):
+        mcp_boot_ready = True
+        mcp_boot_error = None
+        print("✅ MCP配置已就绪，将按用户按需初始化会话")
+    else:
+        mcp_boot_ready = False
+        mcp_boot_error = f"MCP配置文件不存在: {mcp_server_config_path}"
+        print(f"❌ {mcp_boot_error}")
 
-async def init_mcp_client():
-    """后台初始化 MCP 客户端"""
-    global mcp_client, mcp_initialized
-    
-    print("⏳ 等待 Web 服务器启动...")
-    await asyncio.sleep(3)  # 给 Uvicorn 一点时间启动 HTTP 服务
-    
-    print("🚀 正在初始化 MCP 客户端...")
-    
-    try:
-        # 动态导入MCP客户端 (适配调整后的 sys.path)
+async def get_user_client(user_id: Optional[str]):
+    uid = (user_id or "anonymous").strip() or "anonymous"
+    cached = user_clients.get(uid)
+    if cached:
+        return cached
+    if not mcp_boot_ready:
+        raise RuntimeError(mcp_boot_error or "MCP客户端未初始化")
+    async with user_clients_lock:
+        cached = user_clients.get(uid)
+        if cached:
+            return cached
         from client import MCPClient
-        
-        mcp_client = MCPClient()
-        
-        # 加载MCP服务器配置
-        config_path = os.path.join(
-            os.path.dirname(__file__),
-            '../../client/mcp-client/mcp_servers.json'
-        )
-        
-        if not os.path.exists(config_path):
-            print(f"⚠️  配置文件不存在: {config_path}")
-            print("⚠️  MCP客户端将在受限模式下运行")
-            return
-        
-        await mcp_client.load_servers_from_config(config_path)
-        await mcp_client.list_tools()
-        
-        mcp_initialized = True
-        print("✅ MCP客户端初始化成功")
-        print(f"📊 已连接 {len(mcp_client.sessions)} 个MCP服务")
-        print(f"🔧 可用工具: {len(mcp_client.tools_map)} 个")
-        
-    except Exception as e:
-        print(f"❌ MCP客户端初始化失败: {e}")
-        print("⚠️  服务器将在受限模式下运行")
+        client = MCPClient()
+        await client.load_servers_from_config(mcp_server_config_path)
+        await client.list_tools()
+        user_clients[uid] = client
+        return client
+
+async def remove_user_client(user_id: Optional[str]) -> None:
+    uid = (user_id or "anonymous").strip() or "anonymous"
+    async with user_clients_lock:
+        client = user_clients.pop(uid, None)
+    if client:
+        try:
+            await client.clean()
+        except Exception as e:
+            print(f"⚠️ 清理用户会话失败({uid}): {e}")
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """应用关闭时清理资源"""
-    global mcp_client
-    
     print("👋 正在关闭服务器...")
-    
-    if mcp_client:
+    clients = list(user_clients.values())
+    user_clients.clear()
+    for client in clients:
         try:
-            await mcp_client.clean()
-            print("✅ MCP客户端资源已清理")
+            await client.clean()
         except Exception as e:
             print(f"⚠️  清理资源时出错: {e}")
 
@@ -166,6 +174,15 @@ def save_sensor_data_to_file(data: dict):
         import sqlite3
         with sqlite3.connect(SENSOR_DB_FILE) as conn:
             conn.execute("""
+                CREATE TABLE IF NOT EXISTS sensor_data (
+                    device_id TEXT PRIMARY KEY,
+                    temperature REAL,
+                    humidity REAL,
+                    soil_moisture REAL,
+                    timestamp TEXT
+                )
+            """)
+            conn.execute("""
                 INSERT OR REPLACE INTO sensor_data (device_id, temperature, humidity, soil_moisture, timestamp)
                 VALUES (?, ?, ?, ?, ?)
             """, (
@@ -185,11 +202,22 @@ def save_sensor_data_to_file(data: dict):
 @app.post("/api/command/update")
 async def update_command(cmd: dict):
     """更新控制指令（供 MCP Server 调用）"""
-    global_state["command"]["pump_on"] = cmd.get("pump_on", False)
-    global_state["command"]["last_update"] = datetime.now().isoformat()
+    pump_on = bool(cmd.get("pump_on", False))
+    now = datetime.now().isoformat()
+    global_state["command"]["pump_on"] = pump_on
+    global_state["command"]["last_update"] = now
+    # 与实时状态保持一致，避免接口短时不一致
+    global_state["sensor_data"]["pump_status"] = pump_on
+    global_state["sensor_data"]["last_update"] = now
+
+    await manager.broadcast({
+        "type": "sensor_update",
+        "data": global_state["sensor_data"],
+        "timestamp": now,
+    })
     return {"status": "success"}
 
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 # ... (在 app = FastAPI(...) 之后添加)
@@ -208,13 +236,15 @@ async def root():
 
 @app.get("/api/health")
 async def health_check():
-    """健康检查端点"""
+    active_sessions = sum(len(client.sessions) for client in user_clients.values())
+    available_tools = sum(len(client.tools_map) for client in user_clients.values())
     return {
         "status": "healthy",
-        "mcp_initialized": mcp_initialized,
-        "mcp_connected": mcp_client is not None,
-        "active_sessions": len(mcp_client.sessions) if mcp_client else 0,
-        "available_tools": len(mcp_client.tools_map) if mcp_client else 0,
+        "mcp_initialized": mcp_boot_ready,
+        "mcp_connected": len(user_clients) > 0,
+        "active_users": len(user_clients),
+        "active_sessions": active_sessions,
+        "available_tools": available_tools,
         "timestamp": datetime.now().isoformat()
     }
 
@@ -236,52 +266,42 @@ async def get_current_sensor_data():
 
 @app.post("/api/query")
 async def process_query(request: QueryRequest):
-    """处理用户查询（AI决策）"""
-    if not mcp_initialized or not mcp_client:
-        raise HTTPException(status_code=503, detail="MCP客户端未初始化")
-    
     try:
         print(f"📝 收到查询: {request.query}")
-        
+        client = await get_user_client(request.user_id)
         response = await asyncio.wait_for(
-            mcp_client.process_query(request.query),
+            client.process_query(request.query),
             timeout=120
         )
         
-        # 广播到所有WebSocket连接
-        await manager.broadcast({
-            "type": "query_response",
-            "query": request.query,
-            "response": response,
-            "timestamp": datetime.now().isoformat()
-        })
-        
         return {
             "success": True,
             "response": response,
             "timestamp": datetime.now().isoformat()
         }
-        
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="查询处理超时")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"查询处理失败: {str(e)}")
+        print(f"❌ 查询处理失败: {e}")
+        raise HTTPException(status_code=500, detail="查询处理失败")
 
 @app.post("/api/confirm")
-async def confirm_action(action: str):
-    """确认执行操作"""
-    if not mcp_initialized or not mcp_client:
-        raise HTTPException(status_code=503, detail="MCP客户端未初始化")
-    
+async def confirm_action(request: ConfirmRequest):
     try:
-        response = await mcp_client.process_query(action)
+        client = await get_user_client(request.user_id)
+        response = await client.process_query(request.action)
         return {
             "success": True,
             "response": response,
             "timestamp": datetime.now().isoformat()
         }
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"操作确认失败: {str(e)}")
+        print(f"❌ 操作确认失败: {e}")
+        raise HTTPException(status_code=500, detail="操作确认失败")
 
 # ==================== Arduino 专用接口 ====================
 
@@ -322,46 +342,35 @@ async def get_arduino_command():
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    """WebSocket连接，用于实时数据推送"""
     await manager.connect(websocket)
-    
+    session_user_id = f"ws_{uuid4().hex[:8]}"
+    push_task = None
     try:
-        # 发送欢迎消息
         await websocket.send_json({
             "type": "connected",
             "message": "WebSocket连接成功",
             "timestamp": datetime.now().isoformat()
         })
-        
-        # 定时推送传感器数据
+
         async def push_sensor_data():
             while True:
                 try:
-                    await asyncio.sleep(10)  # 每10秒推送一次
-                    
-                    if mcp_initialized and mcp_client and "irrigation" in mcp_client.sessions:
-                        try:
-                            data = await get_current_sensor_data()
-                            await websocket.send_json({
-                                "type": "sensor_update",
-                                "data": data.dict(),
-                                "timestamp": datetime.now().isoformat()
-                            })
-                        except:
-                            pass
+                    await asyncio.sleep(10)
+                    data = await get_current_sensor_data()
+                    await websocket.send_json({
+                        "type": "sensor_update",
+                        "data": data.dict(),
+                        "timestamp": datetime.now().isoformat()
+                    })
                 except asyncio.CancelledError:
                     break
-                except:
+                except Exception:
                     pass
-        
-        # 启动推送任务
+
         push_task = asyncio.create_task(push_sensor_data())
-        
-        # 接收客户端消息
         while True:
             data = await websocket.receive_text()
             message = json.loads(data)
-            
             if message.get("type") == "ping":
                 await websocket.send_json({
                     "type": "pong",
@@ -369,7 +378,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 })
             elif message.get("type") == "query":
                 try:
-                    response = await mcp_client.process_query(message.get("query", ""))
+                    query = message.get("query", "")
+                    user_id = message.get("user_id") or session_user_id
+                    session_user_id = user_id
+                    client = await get_user_client(user_id)
+                    response = await client.process_query(query)
                     await websocket.send_json({
                         "type": "query_response",
                         "response": response,
@@ -381,12 +394,17 @@ async def websocket_endpoint(websocket: WebSocket):
                         "message": str(e),
                         "timestamp": datetime.now().isoformat()
                     })
-    
     except WebSocketDisconnect:
-        manager.disconnect(websocket)
+        pass
     except Exception as e:
         print(f"WebSocket错误: {e}")
+    finally:
+        if push_task:
+            push_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await push_task
         manager.disconnect(websocket)
+        await remove_user_client(session_user_id)
 
 # ==================== 主程序 ====================
 
@@ -397,8 +415,6 @@ if __name__ == "__main__":
     print("🌾 智能农业Web服务器")
     print("="*60)
     print("📡 启动地址: http://localhost:8080")
-    print("📚 API文档: http://localhost:8080/docs")
-    print("🔌 WebSocket: ws://localhost:8080/ws")
     print("="*60)
     print()
     

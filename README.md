@@ -72,42 +72,39 @@ mcp-agent-project/
 ├── client/                          # 客户端
 │   └── mcp-client/
 │       ├── .env.example            # 环境变量模板
-│       ├── client.py               # 主程序
-│       ├── prompts.py              # Agent 提示词
-│       ├── mcp_servers.json        # MCP 服务器配置
+│       ├── client.py               # MCP Client 编排器（智能决策层）
+│       ├── prompts.py              # Agent 提示词工程
+│       ├── mcp_servers.json        # MCP 服务器注册表
 │       └── pyproject.toml          # 依赖配置
-├── server/                          # 服务器端
-│   ├── sensor/                     # 传感器服务
-│   │   ├── sensor.py
+├── server/                          # 服务支撑层 (MCP Servers)
+│   ├── sensor/                     # 传感器服务 (Sensor Server)
+│   │   ├── sensor.py               # 数据存储与查询逻辑
 │   │   └── sensor.db               # SQLite 数据库
-│   ├── weather/                    # 天气服务
-│   │   └── weather.py
+│   ├── weather/                    # 天气服务 (Weather Server)
+│   │   └── weather.py              # OpenWeatherMap API 封装
 │   ├── crop_knowledge/             # 作物知识服务
 │   │   └── knowledge.py
-│   ├── decision/                   # 决策服务
-│   │   └── decision.py
-│   ├── irrigation/                 # 灌溉控制服务
-│   │   ├── main.py
-│   │   ├── config.yaml
-│   │   ├── actuators/              # 执行器
-│   │   └── tools/                  # 工具函数
+│   ├── decision/                   # 决策服务 (Reasoning Engine)
+│   │   └── decision.py             # 专家决策模型与兜底算法
+│   ├── irrigation/                 # 灌溉控制服务 (Irrigation Server)
+│   │   ├── main.py                 # 服务入口
+│   │   ├── config.yaml             # 硬件连接配置
+│   │   └── actuators/              # 执行器驱动 (泵/阀)
 │   ├── filesystem/                 # 文件系统服务
 │   │   └── filesystem.py
-│   ├── search/                     # 搜索服务
+│   ├── search/                     # 搜索服务 (DuckDuckGo)
 │   │   └── src/duckduckgo_mcp_server/
-│   └── web/                        # Web 服务器
-│       ├── app.py
+│   └── web/                        # 人机交互层 (Web UI)
+│       ├── app.py                  # FastAPI 后端与 WebSocket
 │       └── static/
-│           └── index.html
-├── docs/                            # 文档
+│           └── index.html          # 前端监控界面
+├── docs/                            # 项目文档
 │   ├── 快速启动指南.md
-│   ├── 环境配置指南.md
-│   └── 项目问题检查报告.md
-├── arduino_code.ino                 # Arduino 硬件代码
-├── start.bat                        # Windows 启动脚本
-├── check_system.py                  # 系统检查脚本
-├── README.md                        # 项目说明
-└── 系统总体设计.md                  # 架构设计文档
+│   └── ...
+├── arduino_code.ino                 # 感知执行层 (硬件固件)
+├── start.bat                        # 一键启动脚本
+├── check_system.py                  # 环境自检脚本
+└── README.md                        # 项目说明书
 ```
 
 ## 🚀 快速开始

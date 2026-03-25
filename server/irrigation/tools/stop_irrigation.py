@@ -1,5 +1,6 @@
 from server.irrigation.actuators.pump import set_pump_state
 from server.irrigation.actuators.valve import set_valve_state
+from server.irrigation.tools.start_irrigation import cancel_all_failsafe_tasks
 import logging
 
 logger = logging.getLogger(__name__)
@@ -9,6 +10,7 @@ async def stop_irrigation() -> str:
     Stops all irrigation (turns off pump and closes valves).
     """
     try:
+        cancel_all_failsafe_tasks()
         # Stop pump first
         await set_pump_state(False)
         # Then close valve (assuming we close all or specific one, for now log)

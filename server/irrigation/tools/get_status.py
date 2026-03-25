@@ -5,10 +5,25 @@ import os
 
 logger = logging.getLogger(__name__)
 
-# Load config
-config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'config.yaml')
-with open(config_path, 'r', encoding='utf-8') as f:
-    config = yaml.safe_load(f)
+def load_config():
+    config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'config.yaml')
+    if not os.path.exists(config_path):
+        logger.warning("Config file not found at %s, using defaults", config_path)
+        return {
+            "api_url": "http://127.0.0.1:8080/api",
+            "sensor_data_endpoint": "/sensor/current"
+        }
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            return yaml.safe_load(f) or {}
+    except Exception as e:
+        logger.error("Failed to load config: %s", e)
+        return {
+            "api_url": "http://127.0.0.1:8080/api",
+            "sensor_data_endpoint": "/sensor/current"
+        }
+
+config = load_config()
 
 async def get_irrigation_status() -> str:
     """

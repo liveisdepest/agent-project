@@ -4,8 +4,8 @@
 #include <ArduinoJson.h>
 #include <DHT.h>
 
-const char* ssid = "CMCC-dNqR";           // WiFi名称 
-const char* password = "cf25f9cy";      // WiFi密码 
+const char* ssid = "YOUR_WIFI_SSID";           // WiFi名称 
+const char* password = "YOUR_WIFI_PASSWORD";      // WiFi密码 
   
 // 服务器配置 - 请替换为您电脑的实际局域网IP 
 const char* serverURL = "http://192.168.1.9:8080"; 
@@ -19,6 +19,23 @@ const char* deviceID = "ESP8266_001";
 #define LED_PIN D0          // 状态指示LED (GPIO16)
 
 DHT dht(DHT_PIN, DHT_TYPE);
+const bool RELAY_ACTIVE_HIGH = true;
+bool currentPumpOn = false;
+
+void applyPumpCommand(bool pumpOn) {
+  currentPumpOn = pumpOn;
+  uint8_t relayOnLevel = RELAY_ACTIVE_HIGH ? HIGH : LOW;
+  uint8_t relayOffLevel = RELAY_ACTIVE_HIGH ? LOW : HIGH;
+  if (pumpOn) {
+    Serial.println("Action: Relay ON");
+    digitalWrite(RELAY_PIN, relayOnLevel);
+    digitalWrite(LED_PIN, HIGH);
+  } else {
+    Serial.println("Action: Relay OFF");
+    digitalWrite(RELAY_PIN, relayOffLevel);
+    digitalWrite(LED_PIN, LOW);
+  }
+}
 
 void setup() {
   Serial.begin(115200);
@@ -27,8 +44,7 @@ void setup() {
   pinMode(LED_PIN, OUTPUT);
   // pinMode(BUTTON_PIN, INPUT_PULLUP); // 暂时未定义 BUTTON_PIN，如果需要请取消注释并定义引脚
 
-  digitalWrite(RELAY_PIN, LOW); // 初始状态：继电器关闭 (根据您的描述 LOW 是关闭)
-  digitalWrite(LED_PIN, LOW);   // 初始状态：LED 关闭
+  applyPumpCommand(false);
 
   dht.begin();
 
@@ -48,7 +64,7 @@ void loop() {
   float h = dht.readHumidity();
   float t = dht.readTemperature();
   int soilValue = analogRead(SOIL_PIN);
-  // 将模拟值映射到 0-100% (假设干燥是1024，湿润是0，需根据实际校准)
+  // 将模拟值映射到 0-100% 
   int soilMoisture = map(soilValue, 1024, 0, 0, 100); 
   soilMoisture = constrain(soilMoisture, 0, 100);
 
@@ -107,18 +123,13 @@ void loop() {
       
       // 解析指令
       StaticJsonDocument<200> cmdDoc;
-      deserializeJson(cmdDoc, payload);
-      bool pumpOn = cmdDoc["pump_on"];
-      
-      // 执行继电器动作
-      if (pumpOn) {
-        Serial.println("Action: Relay ON");
-        digitalWrite(RELAY_PIN, HIGH); // 开启 (根据您的逻辑 HIGH 是开启)
-        digitalWrite(LED_PIN, HIGH);   // 亮灯 (根据您的逻辑 HIGH 是亮灯)
+      DeserializationError err = deserializeJson(cmdDoc, payload);
+      if (err || !cmdDoc["pump_on"].is<bool>()) {
+        Serial.print("Invalid command payload, keep current state. Error: ");
+        Serial.println(err ? err.c_str() : "pump_on missing");
       } else {
-        Serial.println("Action: Relay OFF");
-        digitalWrite(RELAY_PIN, LOW);  // 关闭
-        digitalWrite(LED_PIN, LOW);    // 灭灯
+        bool pumpOn = cmdDoc["pump_on"];
+        applyPumpCommand(pumpOn);
       }
     } else {
       Serial.print("Error on getting command: ");

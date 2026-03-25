@@ -5,7 +5,7 @@ import os
 mcp = FastMCP("filesystem")
 
 # 定义基础目录，确保文件操作在 file 目录及其子目录下
-BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "file"))
+BASE_DIR = os.path.normcase(os.path.realpath(os.path.join(os.path.dirname(__file__), "..", "..", "file")))
 
 def _get_safe_path(file_name: str) -> str:
     """
@@ -17,9 +17,8 @@ def _get_safe_path(file_name: str) -> str:
         
     # 如果文件名包含路径，只取文件名部分，或者确保它在 BASE_DIR 下
     # 这里简化处理，直接拼接并检查是否在 BASE_DIR 内
-    full_path = os.path.abspath(os.path.join(BASE_DIR, file_name))
-    
-    if not full_path.startswith(BASE_DIR):
+    full_path = os.path.normcase(os.path.realpath(os.path.join(BASE_DIR, file_name)))
+    if os.path.commonpath([BASE_DIR, full_path]) != BASE_DIR:
         raise ValueError(f"访问被拒绝：路径 {full_path} 超出允许范围 {BASE_DIR}")
         
     return full_path
